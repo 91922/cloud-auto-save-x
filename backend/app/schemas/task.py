@@ -86,9 +86,18 @@ class TaskOut(BaseModel):
     shareurl_ban: str | None = None
     tmdb_id: int | None = None
     tmdb_media_type: str | None = None
+    tmdb_status: str | None = None
+    tmdb_is_ended: bool | None = None
     enabled: bool
     addition: dict[str, Any] = {}
     extra: dict[str, Any] = {}
     executions: list[TaskExecutionOut] = []
     created_at: datetime
     updated_at: datetime
+
+
+class StopCompletedDramaTasksOut(BaseModel):
+    checked: int = 0
+    matched: int = 0
+    stopped: int = 0
+    task_ids: list[int] = []

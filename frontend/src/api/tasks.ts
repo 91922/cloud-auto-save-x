@@ -5,6 +5,7 @@ import type {
   RepairBannedTasksResponse,
   SharePreviewBatchResponse,
   SharePreviewResponse,
+  StopCompletedDramaTasksResponse,
   TaskExecutionItem,
   TaskItem,
   TaskSchedulerSetting,
@@ -134,5 +135,12 @@ export async function mkdirDrive(payload: { dir_path: string; account_name?: str
 
 export async function repairBannedDramaTasks() {
   const { data } = await http.post<RepairBannedTasksResponse>('/tasks/repair-banned', null, { headers: { 'X-Silent-Toast': '1' } })
+  return data
+}
+
+export async function stopCompletedDramaTasks() {
+  const { data } = await http.post<StopCompletedDramaTasksResponse>('/tasks/drama/stop-completed', null, {
+    headers: { 'X-Silent-Toast': '1' },
+  })
   return data
 }

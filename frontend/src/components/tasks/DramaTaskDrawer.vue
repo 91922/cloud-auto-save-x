@@ -15,6 +15,7 @@ const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w185'
 type TaskSuggestionItemExt = TaskSuggestionItem & {
   pdir_fid?: string | null
   latest_video?: any | null
+  max_video?: boolean
 }
 
 type TaskFormPayload = {
@@ -489,6 +490,21 @@ async function verifySuggestions(runId: number, items: TaskSuggestionItemExt[]) 
     await new Promise((r) => setTimeout(r, ms))
   }
 
+  const syncLargestVideo = (list: TaskSuggestionItemExt[]) => {
+    const sizes = list.map((x) => Number((x as any)?.latest_video?.size) || 0)
+    const max = sizes.length ? Math.max(...sizes) : 0
+    for (const it of list) {
+      const s = Number((it as any)?.latest_video?.size) || 0
+      it.max_video = max > 0 && s === max
+    }
+    list.sort((a, b) => {
+      const av = Number((a as any)?.latest_video?.size) || 0
+      const bv = Number((b as any)?.latest_video?.size) || 0
+      if (av !== bv) return bv - av
+      return String(a.taskname || '').localeCompare(String(b.taskname || ''))
+    })
+  }
+
   for (const { shareurls } of driveGroups) {
     if (runId !== taskSuggestions.runId) return
     if (!props.modelValue) return
@@ -504,6 +520,7 @@ async function verifySuggestions(runId: number, items: TaskSuggestionItemExt[]) 
         it.pdir_fid = String(row.pdir_fid || row.resolved_pdir_fid || '') || null
         it.latest_video = row.latest_video || null
       }
+      syncLargestVideo(items)
     } catch {
       if (runId !== taskSuggestions.runId) return
       for (const it of items) {
@@ -533,6 +550,7 @@ async function verifySuggestions(runId: number, items: TaskSuggestionItemExt[]) 
   }
 
   if (runId === taskSuggestions.runId) {
+    syncLargestVideo(items)
     taskSuggestions.verifying = false
   }
 }
@@ -1551,6 +1569,7 @@ watch(
               <el-tag size="small" type="success" effect="plain">{{ item.source || '网络公开' }}</el-tag>
               <el-tag v-if="item.channel" size="small" type="info" effect="plain">{{ item.channel }}</el-tag>
               <el-tag v-if="item.datetime" size="small" effect="plain">{{ item.datetime }}</el-tag>
+              <el-tag v-if="item.max_video" size="small" type="warning" effect="plain">文件最大</el-tag>
             </div>
           </div>
         </el-form-item>

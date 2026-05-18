@@ -30,6 +30,8 @@ export type TaskItem = {
   shareurl_ban?: string | null
   tmdb_id?: number | null
   tmdb_media_type?: string | null
+  tmdb_status?: string | null
+  tmdb_is_ended?: boolean | null
   enabled: boolean
   addition: Record<string, any>
   extra: Record<string, any>
@@ -42,6 +44,13 @@ export type TaskSchedulerSetting = {
   enabled: boolean
   crontab: string
   timezone: string
+}
+
+export type StopCompletedDramaTasksResponse = {
+  checked: number
+  matched: number
+  stopped: number
+  task_ids: number[]
 }
 
 export type SharePreviewItem = {

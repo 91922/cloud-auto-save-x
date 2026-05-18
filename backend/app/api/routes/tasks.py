@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 import re
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select, update as sa_update
 from sqlalchemy.orm import Session
 
 from app.core.deps import CurrentUser, get_current_user, require_permissions
@@ -21,6 +21,8 @@ from app.extensions.runtime.account_manager import DatabaseAccountManager
 from app.extensions.runtime.execution_log import ExecutionLog
 from app.extensions.runtime.magic_rename import MagicRename
 from app.models.drive_account import DriveAccount
+from app.models.task import Task
+from app.models.tmdb_media_cache import TMDBMediaCache
 from app.extensions.runtime.task_scheduler import task_scheduler_manager
 from app.extensions.runtime.task_executor import TaskExecutor
 from app.schemas.task_browse import (
@@ -39,7 +41,7 @@ from app.schemas.task_browse import (
 )
 from app.schemas.task_magic_regex import MagicRegexOut, MagicRegexRuleOut
 from app.schemas.task_scheduler import TaskSchedulerSettingOut, TaskSchedulerSettingUpdateIn
-from app.schemas.task import TaskCreateIn, TaskExecutionOut, TaskOut, TaskStatusIn, TaskUpdateIn
+from app.schemas.task import StopCompletedDramaTasksOut, TaskCreateIn, TaskExecutionOut, TaskOut, TaskStatusIn, TaskUpdateIn
 from app.schemas.resource_search import TaskSuggestionListOut
 from app.schemas.task_repair import RepairBannedTasksOut
 from app.services import audit
@@ -51,6 +53,7 @@ from app.services.drama_share_repair import repair_banned_drama_tasks
 from app.services.task_scheduler import get_or_create_task_scheduler_setting, update_task_scheduler_setting
 from app.services.resource_search import fetch_task_suggestions
 from app.services.tasks import create_task, delete_task, get_task, list_tasks, set_task_enabled, update_task
+from app.services.tmdb_settings import get_or_create_tmdb_setting, get_tmdb_runtime_config
 
 router = APIRouter()
 def _share_preview_batch_cache_clear() -> None:
@@ -73,9 +76,102 @@ def _execution_out(item) -> TaskExecutionOut:
     )
 
 
-def _task_out(item) -> TaskOut:
+def _tmdb_lang_pair(db: Session) -> tuple[str, str]:
+    cfg = get_tmdb_runtime_config(get_or_create_tmdb_setting(db))
+    language = str(cfg.get("language") or "zh-CN").strip() or "zh-CN"
+    poster_language = str(cfg.get("poster_language") or "zh-CN").strip() or "zh-CN"
+    return language, poster_language
+
+
+def _tmdb_cache_key(item) -> tuple[str, int] | None:
+    tmdb_id = getattr(item, "tmdb_id", None)
+    if tmdb_id is None:
+        return None
+    try:
+        tid = int(tmdb_id)
+    except Exception:
+        return None
+    if tid <= 0:
+        return None
+    mt = str(getattr(item, "tmdb_media_type", None) or "").strip().lower()
+    if mt not in ("movie", "tv"):
+        return None
+    return mt, tid
+
+
+def _load_tmdb_status_map(db: Session, items: list[object]) -> dict[tuple[str, int], str | None]:
+    keys: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in items:
+        key = _tmdb_cache_key(item)
+        if key is None or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    if not keys:
+        return {}
+
+    language, poster_language = _tmdb_lang_pair(db)
+    tv_ids = [tid for mt, tid in keys if mt == "tv"]
+    movie_ids = [tid for mt, tid in keys if mt == "movie"]
+    conds = []
+    if tv_ids:
+        conds.append(and_(TMDBMediaCache.media_type == "tv", TMDBMediaCache.tmdb_id.in_(tv_ids)))
+    if movie_ids:
+        conds.append(and_(TMDBMediaCache.media_type == "movie", TMDBMediaCache.tmdb_id.in_(movie_ids)))
+    if not conds:
+        return {}
+
+    rows = (
+        db.execute(
+            select(TMDBMediaCache.media_type, TMDBMediaCache.tmdb_id, TMDBMediaCache.status)
+            .where(TMDBMediaCache.language == language, TMDBMediaCache.poster_language == poster_language, or_(*conds))
+            .order_by(TMDBMediaCache.updated_at.desc())
+        )
+        .all()
+    )
+    out: dict[tuple[str, int], str | None] = {}
+    for mt, tid, status in rows:
+        key = (str(mt or "").strip().lower(), int(tid))
+        if key not in out:
+            out[key] = str(status or "").strip() or None
+    return out
+
+
+def _get_tmdb_status(db: Session, mt: str, tid: int) -> str | None:
+    language, poster_language = _tmdb_lang_pair(db)
+    row = (
+        db.execute(
+            select(TMDBMediaCache.status)
+            .where(
+                TMDBMediaCache.media_type == mt,
+                TMDBMediaCache.tmdb_id == tid,
+                TMDBMediaCache.language == language,
+                TMDBMediaCache.poster_language == poster_language,
+            )
+            .order_by(TMDBMediaCache.updated_at.desc())
+            .limit(1)
+        )
+        .first()
+    )
+    if row is None:
+        return None
+    status = str(row[0] or "").strip()
+    return status or None
+
+
+def _task_out(db: Session, item, *, tmdb_status_map: dict[tuple[str, int], str | None] | None = None) -> TaskOut:
     raw_executions = list(getattr(item, "executions", None) or [])
     raw_executions.sort(key=lambda x: x.started_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+    tmdb_status: str | None = None
+    tmdb_is_ended: bool | None = None
+    key = _tmdb_cache_key(item)
+    if key is not None:
+        tmdb_status = tmdb_status_map.get(key) if isinstance(tmdb_status_map, dict) else _get_tmdb_status(db, key[0], key[1])
+        if key[0] == "tv" and tmdb_status is not None:
+            tmdb_is_ended = tmdb_status in ("Ended", "Canceled")
+
     return TaskOut(
         id=item.id,
         task_uid=item.task_uid,
@@ -94,6 +190,8 @@ def _task_out(item) -> TaskOut:
         shareurl_ban=getattr(item, "shareurl_ban", None),
         tmdb_id=getattr(item, "tmdb_id", None),
         tmdb_media_type=getattr(item, "tmdb_media_type", None),
+        tmdb_status=tmdb_status,
+        tmdb_is_ended=tmdb_is_ended,
         enabled=item.enabled,
         addition=json.loads(item.addition_json) if item.addition_json else {},
         extra=json.loads(item.extra_json) if item.extra_json else {},
@@ -292,7 +390,71 @@ def _pick_children_count(payload: dict) -> int | None:
 
 @router.get('', response_model=list[TaskOut], dependencies=[Depends(require_permissions(TASK_READ))])
 def get_tasks(db: Session = Depends(get_db)):
-    return [_task_out(item) for item in list_tasks(db)]
+    items = list_tasks(db)
+    tmdb_status_map = _load_tmdb_status_map(db, items)
+    return [_task_out(db, item, tmdb_status_map=tmdb_status_map) for item in items]
+
+
+@router.post("/drama/stop-completed", response_model=StopCompletedDramaTasksOut, dependencies=[Depends(require_permissions(TASK_WRITE))])
+def post_stop_completed_drama_tasks(request: Request, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    language, poster_language = _tmdb_lang_pair(db)
+
+    checked = (
+        db.execute(
+            select(func.count(Task.id)).where(
+                Task.task_type == "drama",
+                Task.enabled.is_(True),
+                Task.tmdb_id.is_not(None),
+                Task.tmdb_media_type == "tv",
+            )
+        )
+        .scalar_one()
+    )
+    ended_statuses = ["Ended", "Canceled"]
+    matched_ids = (
+        db.execute(
+            select(Task.id)
+            .join(
+                TMDBMediaCache,
+                and_(
+                    TMDBMediaCache.media_type == Task.tmdb_media_type,
+                    TMDBMediaCache.tmdb_id == Task.tmdb_id,
+                    TMDBMediaCache.language == language,
+                    TMDBMediaCache.poster_language == poster_language,
+                ),
+            )
+            .where(
+                Task.task_type == "drama",
+                Task.enabled.is_(True),
+                Task.tmdb_id.is_not(None),
+                Task.tmdb_media_type == "tv",
+                TMDBMediaCache.status.in_(ended_statuses),
+            )
+            .order_by(Task.id.desc())
+        )
+        .scalars()
+        .all()
+    )
+
+    stopped = 0
+    if matched_ids:
+        db.execute(sa_update(Task).where(Task.id.in_(matched_ids)).values(enabled=False))
+        stopped = len(matched_ids)
+
+    audit.write_audit_log(
+        db,
+        actor_user_id=current.user.id,
+        action="task.drama.stop_completed",
+        target_type="task",
+        target_id="drama",
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        success=True,
+        detail=f"checked={checked}, matched={len(matched_ids)}, stopped={stopped}",
+    )
+    db.commit()
+
+    return StopCompletedDramaTasksOut(checked=int(checked or 0), matched=len(matched_ids), stopped=stopped, task_ids=matched_ids[:50])
 
 
 @router.post('', response_model=TaskOut, dependencies=[Depends(require_permissions(TASK_WRITE))])
@@ -301,7 +463,7 @@ def post_task(request: Request, payload: TaskCreateIn, current: CurrentUser = De
     audit.write_audit_log(db, actor_user_id=current.user.id, action='task.create', target_type='task', target_id=str(task.id), ip=request.client.host if request.client else None, user_agent=request.headers.get('user-agent'), success=True)
     db.commit()
     db.refresh(task)
-    return _task_out(task)
+    return _task_out(db, task)
 
 
 @router.patch('/{task_id:int}', response_model=TaskOut, dependencies=[Depends(require_permissions(TASK_WRITE))])
@@ -310,7 +472,7 @@ def patch_task(request: Request, task_id: int, payload: TaskUpdateIn, current: C
     audit.write_audit_log(db, actor_user_id=current.user.id, action='task.update', target_type='task', target_id=str(task_id), ip=request.client.host if request.client else None, user_agent=request.headers.get('user-agent'), success=True)
     db.commit()
     db.refresh(task)
-    return _task_out(task)
+    return _task_out(db, task)
 
 
 @router.patch('/{task_id:int}/status', response_model=TaskOut, dependencies=[Depends(require_permissions(TASK_WRITE))])
@@ -319,7 +481,7 @@ def patch_task_status(request: Request, task_id: int, payload: TaskStatusIn, cur
     audit.write_audit_log(db, actor_user_id=current.user.id, action='task.status', target_type='task', target_id=str(task_id), ip=request.client.host if request.client else None, user_agent=request.headers.get('user-agent'), success=True, detail=f'enabled={payload.enabled}')
     db.commit()
     db.refresh(task)
-    return _task_out(task)
+    return _task_out(db, task)
 
 
 @router.delete('/{task_id:int}', dependencies=[Depends(require_permissions(TASK_WRITE))])
@@ -653,7 +815,7 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
     taskname = str(payload.taskname or "")
     pattern = str(payload.pattern or "")
     replace = str(payload.replace or "")
-    savepath = str(payload.savepath or "").strip()
+    savepath = str(payload.savepath or "").strip().rstrip("/")
     update_subdir = str(payload.update_subdir or "").strip()
     startfid = str(payload.startfid or "").strip()
     ignore_ext = bool(payload.ignore_extension)
@@ -945,7 +1107,7 @@ def post_drive_browse(payload: DriveBrowseIn, db: Session = Depends(get_db)):
     normalized_path = re.sub(r"/+", "/", dir_path)
     if not normalized_path.startswith("/") and not is_fid_mode:
         normalized_path = "/" + normalized_path
-
+    normalized_path = normalized_path.rstrip('/')
     paths: list[DriveBrowsePathOut] = []
     if dir_path in ("/", "0"):
         pdir_fid = "0"

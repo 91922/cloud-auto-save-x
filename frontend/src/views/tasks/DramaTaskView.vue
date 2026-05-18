@@ -8,6 +8,7 @@ import {
   fetchTaskSchedulerSetting,
   fetchTasks,
   repairBannedDramaTasks,
+  stopCompletedDramaTasks,
   setTaskStatus,
   updateTask,
   updateTaskSchedulerSetting,
@@ -30,6 +31,7 @@ const plugins = ref<PluginItem[]>([])
 const scheduler = ref<TaskSchedulerSetting | null>(null)
 const schedulerSaving = ref(false)
 const repairSaving = ref(false)
+const stopCompletedSaving = ref(false)
 
 const drawerVisible = ref(false)
 const currentTask = ref<TaskItem | null>(null)
@@ -55,6 +57,8 @@ let runLogController: AbortController | null = null
 
 const viewport = reactive({ width: window.innerWidth })
 const isMobile = computed(() => viewport.width <= 768)
+const isPad = computed(() => viewport.width > 768 && viewport.width <= 1024)
+const showAllActions = computed(() => isMobile.value || viewport.width > 1024)
 
 function onResize() {
   viewport.width = window.innerWidth
@@ -283,8 +287,8 @@ async function confirmDelete() {
 }
 
 function handleRowCommand(command: string, row: TaskItem) {
-  if (command === 'toggle') {
-    handleToggle(row, !row.enabled)
+  if (command === 'edit') {
+    openEditDrawer(row)
     return
   }
   if (command === 'delete') {
@@ -577,6 +581,39 @@ async function confirmRepairBanned() {
   }
 }
 
+async function confirmStopCompleted() {
+  try {
+    await ElMessageBox.confirm(
+      '确认一键停止（禁用）所有“已完结”的追剧任务吗？\n\n- 仅处理：已启用 + 已关联 TMDB(tv)\n- 依据 TMDB 缓存的 status=Ended/Canceled 判断完结',
+      '停止已完结任务',
+      {
+        type: 'warning',
+        confirmButtonText: '停止',
+        cancelButtonText: '取消',
+      },
+    )
+  } catch {
+    return
+  }
+  stopCompletedSaving.value = true
+  try {
+    const res = await stopCompletedDramaTasks()
+    const checked = Number(res?.checked || 0)
+    const matched = Number(res?.matched || 0)
+    const stopped = Number(res?.stopped || 0)
+    await ElMessageBox.alert(`处理完成：checked=${checked}，matched=${matched}，stopped=${stopped}`, '停止结果', {
+      type: 'success',
+      confirmButtonText: '确定',
+    })
+    await loadData()
+  } catch (e: any) {
+    const msg = String(e?.response?.data?.message || e?.response?.data?.detail || e?.message || '停止失败')
+    await ElMessageBox.alert(msg, '停止失败', { type: 'error', confirmButtonText: '确定' })
+  } finally {
+    stopCompletedSaving.value = false
+  }
+}
+
 onMounted(() => {
   loadData()
   window.addEventListener('resize', onResize, { passive: true })
@@ -596,6 +633,7 @@ onBeforeUnmount(() => {
       <div class="toolbar__right">
         <el-button type="primary" @click="loadData">刷新</el-button>
         <el-button v-if="canRun" @click="confirmRunAll">执行全部</el-button>
+        <el-button v-if="canWrite" :loading="stopCompletedSaving" @click="confirmStopCompleted">停止已完结任务</el-button>
         <el-button v-if="canWrite" :loading="repairSaving" @click="confirmRepairBanned">修复失效任务</el-button>
         <el-button v-if="canWrite" type="success" @click="openCreateDrawer">新增任务</el-button>
       </div>
@@ -662,30 +700,63 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="账号" width="230">
+        <el-table-column label="账号" width="160">
           <template #default="{ row }">
             <span>{{ formatAccountLabel(row) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="savepath" label="保存路径" min-width="200" />
-        <el-table-column prop="enabled" label="状态" width="100">
+        <el-table-column label="完结" width="80">
           <template #default="{ row }">
-            <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '禁用' }}</el-tag>
+            <el-tag v-if="row.tmdb_media_type === 'tv' && row.tmdb_is_ended === true" type="success" effect="plain">完结</el-tag>
+            <el-tag v-else-if="row.tmdb_media_type === 'tv' && row.tmdb_status" type="warning" effect="plain">连载</el-tag>
+            <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column prop="enabled" label="状态" width="100">
           <template #default="{ row }">
-            <el-button v-if="canWrite" text bg @click="openEditDrawer(row)">编辑</el-button>
-            <el-button v-if="canRun" text bg type="primary" :disabled="Boolean(row.shareurl_ban)" @click="handleRun(row)">执行</el-button>
-            <el-dropdown v-if="canWrite" trigger="click" @command="(cmd: string) => handleRowCommand(cmd, row)">
-              <el-button text bg>更多</el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="toggle">{{ row.enabled ? '禁用' : '启用' }}</el-dropdown-item>
-                  <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <el-tag :type="row.enabled ? 'primary' : 'danger'">{{ row.enabled ? '启用' : '禁用' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" :width="isPad ? 240 : 320" fixed="right">
+          <template #default="{ row }">
+            <div v-if="showAllActions" class="task-actions">
+              <el-button v-if="canWrite" :type="row.enabled ? 'danger' : 'primary'" text bg  @click="handleToggle(row, !row.enabled)">{{ row.enabled ? '禁用' : '启用' }}</el-button>
+              <el-button
+                v-if="canRun"
+                text
+                bg
+                type="success"
+                :disabled="Boolean(row.shareurl_ban)"
+                @click="handleRun(row)"
+              >
+                执行
+              </el-button>
+              <el-button v-if="canWrite" text bg  @click="openEditDrawer(row)">编辑</el-button>
+              <el-button v-if="canWrite" text bg type="danger"  @click="openDeleteDialog(row)">删除</el-button>
+            </div>
+            <div v-else class="task-actions">
+              <el-button v-if="canWrite" text bg :type="row.enabled ? 'danger' : 'primary'"  @click="handleToggle(row, !row.enabled)">{{ row.enabled ? '禁用' : '启用' }}</el-button>
+              <el-button
+                v-if="canRun"
+                text
+                bg
+                type="success"
+                :disabled="Boolean(row.shareurl_ban)"
+                @click="handleRun(row)"
+              >
+                执行
+              </el-button>
+              <el-dropdown v-if="canWrite" trigger="click" @command="(cmd: string) => handleRowCommand(cmd, row)">
+                <el-button text bg >更多</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="edit">编辑</el-dropdown-item>
+                    <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -701,6 +772,12 @@ onBeforeUnmount(() => {
           <div class="task-card__meta">
             <div class="task-card__meta-row"><span class="task-card__label">账号</span>{{ formatAccountLabel(row) }}</div>
             <div class="task-card__meta-row"><span class="task-card__label">路径</span>{{ row.savepath || '-' }}</div>
+            <div class="task-card__meta-row">
+              <span class="task-card__label">完结</span>
+              <span v-if="row.tmdb_media_type === 'tv' && row.tmdb_is_ended === true">完结</span>
+              <span v-else-if="row.tmdb_media_type === 'tv' && row.tmdb_status">连载</span>
+              <span v-else>-</span>
+            </div>
             <div v-if="row.shareurl_ban" class="task-card__meta-row">
               <span class="task-card__label">封禁</span>{{ row.shareurl_ban }}
             </div>
@@ -714,17 +791,21 @@ onBeforeUnmount(() => {
             <div class="task-card__exec-msg">{{ row.executions[0].message }}</div>
           </div>
           <div class="task-card__actions">
-            <el-button v-if="canWrite" text bg @click="openEditDrawer(row)">编辑</el-button>
-            <el-button v-if="canRun" text bg type="primary" :disabled="Boolean(row.shareurl_ban)" @click="handleRun(row)">执行</el-button>
-            <el-dropdown v-if="canWrite" trigger="click" @command="(cmd: string) => handleRowCommand(cmd, row)">
-              <el-button text bg>更多</el-button>
-              <template #dropdown>
-                <el-dropdown-menu>
-                  <el-dropdown-item command="toggle">{{ row.enabled ? '禁用' : '启用' }}</el-dropdown-item>
-                  <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
-                </el-dropdown-menu>
-              </template>
-            </el-dropdown>
+            <div class="task-actions">
+              <el-button v-if="canWrite" text bg :type="row.enabled ? 'danger' : 'primary'" @click="handleToggle(row, !row.enabled)">{{ row.enabled ? '禁用' : '启用' }}</el-button>
+              <el-button
+                v-if="canRun"
+                text
+                bg
+                type="success"
+                :disabled="Boolean(row.shareurl_ban)"
+                @click="handleRun(row)"
+              >
+                执行
+              </el-button>
+              <el-button v-if="canWrite" text bg  @click="openEditDrawer(row)">编辑</el-button>
+              <el-button v-if="canWrite" text bg type="danger" @click="openDeleteDialog(row)">删除</el-button>
+            </div>
           </div>
         </el-card>
       </div>
@@ -893,9 +974,24 @@ onBeforeUnmount(() => {
 
 .task-card__actions {
   margin-top: 12px;
+}
+
+.task-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+}
+
+.task-actions__first {
+  margin-right: 14px;
+}
+
+.task-actions__item {
+  margin-right: 6px;
+}
+
+.task-actions__last {
+  margin-right: 0;
 }
 
 @media (max-width: 768px) {
