@@ -189,7 +189,7 @@ def repair_banned_drama_tasks(db: Session) -> dict:
                     continue
                 seen.add(url)
                 candidate_urls.append(url)
-                if len(candidate_urls) >= 30:
+                if len(candidate_urls) >= 25:
                     break
             if not candidate_urls:
                 if debug:

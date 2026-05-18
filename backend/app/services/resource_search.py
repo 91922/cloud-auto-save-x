@@ -418,12 +418,13 @@ def fetch_task_suggestions(
         try:
             if not rows["net"].enabled:
                 return []
-            base_url = base64.b64decode("aHR0cHM6Ly9zLjkxNzc4OC54eXo=").decode()
+            base_url = base64.b64decode("aHR0cHM6Ly9wYW5zZWFyY2guMTIzY2YudG9w").decode()
             url = f"{base_url}/task_suggestions"
             r = requests.get(url, params={"q": keyword.lower(), "d": str(deep)}, timeout=EXTERNAL_TIMEOUT)
             data = r.json()
+            print(data)
             if isinstance(data, dict):
-                return data.get("data") if isinstance(data.get("data"), list) else []
+                return data if isinstance(data, list) else []
             return data if isinstance(data, list) else []
         except Exception:
             return []
