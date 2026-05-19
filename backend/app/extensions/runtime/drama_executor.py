@@ -443,8 +443,7 @@ class DramaTaskExecutor:
                     try:
                         from app.extensions.runtime.guessit_fallback import guessit_media_target
 
-                        file_name_re = (
-                            guessit_media_target(
+                        target = guessit_media_target(
                                 origin_name,
                                 media_type=tmdb_media_type,
                                 tmdb_title=tmdb_series_title,
@@ -454,10 +453,11 @@ class DramaTaskExecutor:
                                 movie_rename_template=str(self.task_data.get("guessit_tmdb_movie_rename_template") or "").strip() or None,
                                 trace_tag="drama_plan",
                             )
-                            or origin_name
-                        )
+                        if not target:
+                            continue
+                        file_name_re = target
                     except Exception:
-                        file_name_re = origin_name
+                        continue
                 else:
                     file_name_re = mr.sub(pattern, replace, origin_name)
             if mr.is_exists(file_name_re, dest_filename_list, ignore_extension and not _is_dir(raw)):
