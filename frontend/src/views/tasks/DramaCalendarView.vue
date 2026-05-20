@@ -2,7 +2,7 @@
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
 
-import { fetchTMDBDetail } from '@/api/media'
+import { fetchTMDBDetail, invalidateTMDBDetailCache } from '@/api/media'
 import { fetchTasks } from '@/api/tasks'
 import type { TMDBDetail } from '@/types/media'
 import type { TaskItem } from '@/types/tasks'
@@ -391,17 +391,30 @@ function predictedEndAirDateUsingTMDBEpisodes(s: {
 function tvPredictedEndAirDate(data: any, days: WeekdayKey[]) {
   if (!data || !days.length) return null
   const status = String(data?.status || '').trim().toLowerCase()
-  const endedAt = String(data?.last_air_date || data?.last_episode_to_air?.air_date || '').trim()
-  if (status === 'ended') return endedAt || null
+  const endedAt = String(data?.last_episode_to_air?.air_date || data?.last_air_date || '').trim()
 
   const total = tvTotalEpisodesFromDetail(data)
   const aired = tvAiredEpisodesFromDetail(data, total)
   const nextDateStr = String(data?.next_episode_to_air?.air_date || '').trim()
   const nextDate = nextDateStr ? parseDateOnly(nextDateStr) : null
+  if (status === 'ended') {
+    if (nextDate) {
+      if (total != null && aired != null && Number(total) > Number(aired)) {
+        let d = nextDate
+        const cap = Math.min(Number(total) - Number(aired), 600)
+        for (let i = 1; i < cap; i += 1) {
+          d = nextDateByWeekdays(d, days)
+        }
+        return formatYYYYMMDD(d)
+      }
+    }
+    return endedAt || null
+  }
+
   if (!nextDate) return null
   if (total == null || aired == null) return null
   const remaining = Number(total) - Number(aired)
-  if (!Number.isFinite(remaining) || remaining <= 0) return endedAt || null
+  if (!Number.isFinite(remaining) || remaining <= 0) return null
 
   let d = nextDate
   const cap = Math.min(remaining, 600)
@@ -566,6 +579,14 @@ const schedules = computed(() => {
       const data = detail?.data || null
       if (!data || mt !== 'tv') return null
       if (episodeDates.length) {
+        const status = String(data?.status || '').trim().toLowerCase()
+        const maxKnown = maxEpisodeDate(episodeDates)
+        if (status !== 'ended' && status !== 'canceled') {
+          if (maxKnown && dateOnly(maxKnown).getTime() > dateOnly(new Date()).getTime()) {
+            return formatYYYYMMDD(maxKnown)
+          }
+          return null
+        }
         return (
           predictedEndAirDateUsingTMDBEpisodes({
             episodeDates,
@@ -978,6 +999,7 @@ async function loadData() {
 async function handleRefresh() {
   for (const k of Object.keys(detailsById)) delete detailsById[Number(k)]
   for (const k of Object.keys(detailPromises)) delete detailPromises[Number(k)]
+  invalidateTMDBDetailCache()
   await loadData()
 }
 

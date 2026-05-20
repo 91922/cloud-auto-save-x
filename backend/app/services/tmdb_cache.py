@@ -86,68 +86,13 @@ def compute_expires_at(details: dict[str, Any], *, media_type: MediaType, now: d
     return now + timedelta(hours=24)
 
 
-def infer_tv_update_weekdays(tv_id: int, details: dict[str, Any], client: TMDBClient) -> list[int]:
-    def index_seasons(value: Any) -> dict[int, dict[str, Any]]:
-        if not isinstance(value, list):
-            return {}
-        out: dict[int, dict[str, Any]] = {}
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            try:
-                sn = int(item.get("season_number") or 0)
-            except Exception:
-                continue
-            out[sn] = item
-        return out
-
-    def parse_day(value: Any) -> int | None:
-        d = _parse_date(value)
-        return d.isoweekday() if d is not None else None
-
-    next_episode = details.get("next_episode_to_air")
-    next_day = parse_day(next_episode.get("air_date") if isinstance(next_episode, dict) else None)
-
-    last_ep = details.get("last_episode_to_air")
-    season_number = int(last_ep.get("season_number") or 0) if isinstance(last_ep, dict) else 0
-    if season_number <= 0:
-        seasons = details.get("seasons") if isinstance(details.get("seasons"), list) else []
-        best = 0
-        for s in seasons:
-            if not isinstance(s, dict):
-                continue
-            n = int(s.get("season_number") or 0)
-            if n > best:
-                best = n
-        season_number = best
-
-    weekdays: list[int] = []
-    if season_number > 0:
-        seasons_full = index_seasons(details.get("seasons_full"))
-        season = seasons_full.get(int(season_number)) or (client.get_tv_season(tv_id, season_number) or {})
-        episodes = season.get("episodes") if isinstance(season.get("episodes"), list) else []
-        air_dates: list[str] = []
-        for ep in episodes:
-            if not isinstance(ep, dict):
-                continue
-            ad = str(ep.get("air_date") or "").strip()
-            if ad:
-                air_dates.append(ad)
-        air_dates.sort()
-        for ad in air_dates:
-            d = parse_day(ad)
-            if d is not None:
-                weekdays.append(d)
-
-    if next_day is not None:
-        weekdays.append(next_day)
-
-    if not weekdays:
+def _infer_weekdays_from_weekday_samples(weekdays: list[int]) -> list[int]:
+    samples = [int(x) for x in weekdays if 1 <= int(x) <= 7]
+    if not samples:
         return []
-
-    unique = sorted({int(x) for x in weekdays if 1 <= int(x) <= 7})
-    total = len(weekdays)
-    counts = Counter(weekdays)
+    unique = sorted({int(x) for x in samples if 1 <= int(x) <= 7})
+    total = len(samples)
+    counts = Counter(samples)
     most_day, most_count = counts.most_common(1)[0]
     picked: list[int] = []
     if total >= 4 and (most_count / total) >= 0.6:
@@ -157,12 +102,128 @@ def infer_tv_update_weekdays(tv_id: int, details: dict[str, Any], client: TMDBCl
             if c >= 2 and (c / total) >= 0.2:
                 picked.append(int(d))
         if not picked:
-            picked = list({int(x) for x in weekdays})
+            picked = list({int(x) for x in samples})
 
     picked = sorted({int(x) for x in picked if 1 <= int(x) <= 7})
     if total >= 7 and len(unique) >= 5 and (most_count / total) <= 0.4:
         return unique
     return picked[:3]
+
+
+def infer_tv_episode_weekdays_from_details(details: dict[str, Any]) -> list[int]:
+    def compute(*, season_number: int | None) -> list[int]:
+        out: list[date] = []
+        seen: set[date] = set()
+
+        seasons_full = details.get("seasons_full") if isinstance(details.get("seasons_full"), list) else []
+        for s in seasons_full:
+            if not isinstance(s, dict):
+                continue
+            try:
+                sn = int(s.get("season_number") or 0)
+            except Exception:
+                sn = 0
+            if sn <= 0:
+                continue
+            if season_number is not None and sn != int(season_number):
+                continue
+            episodes = s.get("episodes") if isinstance(s.get("episodes"), list) else []
+            for ep in episodes:
+                if not isinstance(ep, dict):
+                    continue
+                dt = _parse_date(ep.get("air_date"))
+                if dt is None or dt in seen:
+                    continue
+                seen.add(dt)
+                out.append(dt)
+
+        last_ep = details.get("last_episode_to_air") if isinstance(details.get("last_episode_to_air"), dict) else None
+        last_dt = _parse_date(last_ep.get("air_date") if isinstance(last_ep, dict) else None)
+        if last_dt is not None and last_dt not in seen:
+            seen.add(last_dt)
+            out.append(last_dt)
+
+        next_ep = details.get("next_episode_to_air") if isinstance(details.get("next_episode_to_air"), dict) else None
+        next_dt = _parse_date(next_ep.get("air_date") if isinstance(next_ep, dict) else None)
+        if next_dt is not None and next_dt not in seen:
+            seen.add(next_dt)
+            out.append(next_dt)
+
+        out.sort()
+        if not out:
+            return []
+        if len(out) > 100:
+            out = out[-100:]
+        weekdays = [d.isoweekday() for d in out]
+        return _infer_weekdays_from_weekday_samples(weekdays)
+
+    last_ep = details.get("last_episode_to_air") if isinstance(details.get("last_episode_to_air"), dict) else None
+    last_season_number = int(last_ep.get("season_number") or 0) if isinstance(last_ep, dict) else 0
+    if last_season_number > 0:
+        picked = compute(season_number=last_season_number)
+        if picked:
+            return picked
+    return compute(season_number=None)
+
+
+def infer_tv_update_weekdays(tv_id: int, details: dict[str, Any], client: TMDBClient) -> list[int]:
+    def parse_weekday(value: Any) -> int | None:
+        dt = _parse_date(value)
+        return dt.isoweekday() if dt is not None else None
+
+    next_ep = details.get("next_episode_to_air") if isinstance(details.get("next_episode_to_air"), dict) else None
+    next_day = parse_weekday(next_ep.get("air_date") if isinstance(next_ep, dict) else None)
+
+    last_ep = details.get("last_episode_to_air") if isinstance(details.get("last_episode_to_air"), dict) else None
+    season_number = int(last_ep.get("season_number") or 0) if isinstance(last_ep, dict) else 0
+    if season_number <= 0:
+        seasons = details.get("seasons") if isinstance(details.get("seasons"), list) else []
+        best = 0
+        for s in seasons:
+            if not isinstance(s, dict):
+                continue
+            try:
+                n = int(s.get("season_number") or 0)
+            except Exception:
+                continue
+            if n > best:
+                best = n
+        season_number = best
+
+    weekdays: list[int] = []
+    if season_number > 0:
+        picked = None
+        seasons_full = details.get("seasons_full") if isinstance(details.get("seasons_full"), list) else []
+        for s in seasons_full:
+            if not isinstance(s, dict):
+                continue
+            try:
+                sn = int(s.get("season_number") or 0)
+            except Exception:
+                continue
+            if sn == int(season_number):
+                picked = s
+                break
+
+        season = picked if isinstance(picked, dict) else (client.get_tv_season(tv_id, season_number) or {})
+        episodes = season.get("episodes") if isinstance(season.get("episodes"), list) else []
+        air_dates: list[str] = []
+        for ep in episodes:
+            if not isinstance(ep, dict):
+                continue
+            ad = str(ep.get("air_date") or "").strip()
+            if ad:
+                air_dates.append(ad)
+        air_dates.sort()
+        for ad in air_dates[-10:]:
+            d = parse_weekday(ad)
+            if d is not None:
+                weekdays.append(d)
+
+    if next_day is not None:
+        weekdays.append(next_day)
+
+    return _infer_weekdays_from_weekday_samples(weekdays)
 
 
 def _extract_summary(details: dict[str, Any], *, media_type: MediaType) -> dict[str, Any]:
@@ -223,13 +284,13 @@ def _fetch_tmdb_detail(
     tmdb_id: int,
     language: str,
     poster_language: str,
-) -> tuple[dict[str, Any] | None, list[int]]:
+) -> tuple[dict[str, Any] | None, list[int], list[int]]:
     if media_type == "movie":
         details = client.get_movie_details(tmdb_id)
     else:
         details = client.get_tv_details(tmdb_id)
     if not details:
-        return None, []
+        return None, [], []
 
     if poster_language == "original":
         original_language = str(details.get("original_language") or "")
@@ -244,6 +305,7 @@ def _fetch_tmdb_detail(
                 details["poster_path"] = alt.get("poster_path")
 
     update_weekdays: list[int] = []
+    episode_weekdays: list[int] = []
     if media_type == "tv":
         seasons = details.get("seasons") if isinstance(details.get("seasons"), list) else []
         season_numbers: list[int] = []
@@ -270,7 +332,8 @@ def _fetch_tmdb_detail(
             details["seasons_full"] = seasons_full
             details["seasons_full_meta"] = {"expected": len(season_numbers), "fetched": len(seasons_full), "failed": failed[:50]}
         update_weekdays = infer_tv_update_weekdays(tmdb_id, details, client)
-    return details, update_weekdays
+        episode_weekdays = infer_tv_episode_weekdays_from_details(details)
+    return details, update_weekdays, episode_weekdays
 
 
 def _get_cache_row(db: Session, *, media_type: MediaType, tmdb_id: int, language: str, poster_language: str) -> TMDBMediaCache | None:
@@ -322,7 +385,7 @@ def refresh_tmdb_detail_sync(
     language: str,
     poster_language: str,
     force: bool = False,
-) -> tuple[TMDBMediaCache | None, dict[str, Any] | None, list[int]]:
+) -> tuple[TMDBMediaCache | None, dict[str, Any] | None, list[int], list[int]]:
     now = _now()
     row = _get_cache_row(db, media_type=media_type, tmdb_id=tmdb_id, language=language, poster_language=poster_language)
     if row is None:
@@ -332,21 +395,29 @@ def refresh_tmdb_detail_sync(
 
     if not force and row.expires_at is not None and row.expires_at > now and row.payload_json:
         payload = _load_json(row.payload_json)
-        weekdays = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
-        return row, payload if isinstance(payload, dict) else None, weekdays if isinstance(weekdays, list) else []
+        stored = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
+        update_weekdays = stored if isinstance(stored, list) else []
+        episode_weekdays = (
+            infer_tv_episode_weekdays_from_details(payload) if isinstance(payload, dict) and media_type == "tv" else []
+        )
+        return row, payload if isinstance(payload, dict) else None, update_weekdays, episode_weekdays
 
     configured, api_key, _, _ = _get_runtime_tmdb_config(db)
     if not configured:
-        return row, None, []
+        return row, None, [], []
     client = _new_tmdb_client(api_key=api_key, language=language)
 
     if not _try_acquire_refresh_lock(db, row_id=row.id, now=now):
         payload = _load_json(row.payload_json)
-        weekdays = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
-        return row, payload if isinstance(payload, dict) else None, weekdays if isinstance(weekdays, list) else []
+        stored = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
+        update_weekdays = stored if isinstance(stored, list) else []
+        episode_weekdays = (
+            infer_tv_episode_weekdays_from_details(payload) if isinstance(payload, dict) and media_type == "tv" else []
+        )
+        return row, payload if isinstance(payload, dict) else None, update_weekdays, episode_weekdays
 
     try:
-        details, update_weekdays = _fetch_tmdb_detail(
+        details, update_weekdays, episode_weekdays = _fetch_tmdb_detail(
             client, media_type=media_type, tmdb_id=tmdb_id, language=language, poster_language=poster_language
         )
         if details is None:
@@ -355,7 +426,7 @@ def refresh_tmdb_detail_sync(
             row.fetched_at = now
             row.expires_at = compute_expires_at({}, media_type=media_type, now=now, fail_count=0)
             db.flush()
-            return row, None, []
+            return row, None, [], []
 
         summary = _extract_summary(details, media_type=media_type)
         row.payload_json = _dump_json(details)
@@ -367,15 +438,19 @@ def refresh_tmdb_detail_sync(
         for k, v in summary.items():
             setattr(row, k, v)
         db.flush()
-        return row, details, update_weekdays
+        return row, details, update_weekdays, episode_weekdays
     except Exception as e:
         row.fail_count = int(row.fail_count or 0) + 1
         row.last_error = str(e)
         row.expires_at = compute_expires_at({}, media_type=media_type, now=now, fail_count=row.fail_count)
         db.flush()
         payload = _load_json(row.payload_json)
-        weekdays = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
-        return row, payload if isinstance(payload, dict) else None, weekdays if isinstance(weekdays, list) else []
+        stored = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
+        update_weekdays = stored if isinstance(stored, list) else []
+        episode_weekdays = (
+            infer_tv_episode_weekdays_from_details(payload) if isinstance(payload, dict) and media_type == "tv" else []
+        )
+        return row, payload if isinstance(payload, dict) else None, update_weekdays, episode_weekdays
     finally:
         _release_refresh_lock(db, row_id=row.id)
 
@@ -407,10 +482,10 @@ def get_tmdb_detail_cached(
     media_type: MediaType,
     tmdb_id: int,
     force_refresh: bool = False,
-) -> tuple[bool, dict[str, Any] | None, list[int], TMDBMediaCache | None]:
+) -> tuple[bool, dict[str, Any] | None, list[int], list[int], TMDBMediaCache | None]:
     configured, _, language, poster_language = _get_runtime_tmdb_config(db)
     if not configured:
-        return False, None, [], None
+        return False, None, [], [], None
 
     now = _now()
     row = _get_cache_row(db, media_type=media_type, tmdb_id=tmdb_id, language=language, poster_language=poster_language)
@@ -418,7 +493,7 @@ def get_tmdb_detail_cached(
         row.last_accessed_at = now
         db.flush()
         if force_refresh:
-            row2, details, weekdays = refresh_tmdb_detail_sync(
+            row2, details, update_weekdays, episode_weekdays = refresh_tmdb_detail_sync(
                 db,
                 media_type=media_type,
                 tmdb_id=tmdb_id,
@@ -426,18 +501,26 @@ def get_tmdb_detail_cached(
                 poster_language=poster_language,
                 force=True,
             )
-            return True, details, weekdays, row2
+            return True, details, update_weekdays, episode_weekdays, row2
         if row.expires_at is not None and row.expires_at > now and row.payload_json:
             payload = _load_json(row.payload_json)
-            weekdays = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
-            return True, payload if isinstance(payload, dict) else None, weekdays if isinstance(weekdays, list) else [], row
+            stored = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
+            update_weekdays = stored if isinstance(stored, list) else []
+            episode_weekdays = (
+                infer_tv_episode_weekdays_from_details(payload) if isinstance(payload, dict) and media_type == "tv" else []
+            )
+            return True, payload if isinstance(payload, dict) else None, update_weekdays, episode_weekdays, row
         if row.payload_json:
             trigger_refresh_async(db, media_type=media_type, tmdb_id=tmdb_id, language=language, poster_language=poster_language)
             payload = _load_json(row.payload_json)
-            weekdays = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
-            return True, payload if isinstance(payload, dict) else None, weekdays if isinstance(weekdays, list) else [], row
+            stored = _load_json(row.update_weekdays_json) if row.update_weekdays_json else None
+            update_weekdays = stored if isinstance(stored, list) else []
+            episode_weekdays = (
+                infer_tv_episode_weekdays_from_details(payload) if isinstance(payload, dict) and media_type == "tv" else []
+            )
+            return True, payload if isinstance(payload, dict) else None, update_weekdays, episode_weekdays, row
 
-    row2, details, weekdays = refresh_tmdb_detail_sync(
+    row2, details, update_weekdays, episode_weekdays = refresh_tmdb_detail_sync(
         db,
         media_type=media_type,
         tmdb_id=tmdb_id,
@@ -445,7 +528,7 @@ def get_tmdb_detail_cached(
         poster_language=poster_language,
         force=True,
     )
-    return True, details, weekdays, row2
+    return True, details, update_weekdays, episode_weekdays, row2
 
 
 def refresh_linked_tasks(

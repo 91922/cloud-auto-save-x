@@ -179,9 +179,9 @@ def tmdb_detail(
     *,
     media_type: MediaType,
     tmdb_id: int,
-) -> tuple[bool, dict[str, Any] | None, list[int]]:
-    configured, data, update_weekdays, _row = get_tmdb_detail_cached(db, media_type=media_type, tmdb_id=tmdb_id)
-    return configured, data, update_weekdays
+) -> tuple[bool, dict[str, Any] | None, list[int], list[int]]:
+    configured, data, update_weekdays, episode_weekdays, _row = get_tmdb_detail_cached(db, media_type=media_type, tmdb_id=tmdb_id)
+    return configured, data, update_weekdays, episode_weekdays
 
 
 def _infer_tv_update_weekdays(tv_id: int, details: dict[str, Any], client: TMDBClient) -> list[int]:

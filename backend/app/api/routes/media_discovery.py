@@ -82,10 +82,15 @@ def get_tmdb_detail(
 ) -> TMDBDetailOut:
     mt = str(media_type or "").strip().lower()
     if mt not in ("movie", "tv"):
-        return TMDBDetailOut(media_type=mt or media_type, data={}, update_weekdays=[])
-    configured, data, update_weekdays = tmdb_detail(db, media_type=mt, tmdb_id=tmdb_id)  # type: ignore[arg-type]
+        return TMDBDetailOut(media_type=mt or media_type, data={}, update_weekdays=[], episode_weekdays=[])
+    configured, data, update_weekdays, episode_weekdays = tmdb_detail(db, media_type=mt, tmdb_id=tmdb_id)  # type: ignore[arg-type]
     db.commit()
-    return TMDBDetailOut(media_type=mt, data=data or {}, update_weekdays=update_weekdays or [])
+    return TMDBDetailOut(
+        media_type=mt,
+        data=data or {},
+        update_weekdays=update_weekdays or [],
+        episode_weekdays=episode_weekdays or [],
+    )
 
 
 @router.get("/proxy-image")

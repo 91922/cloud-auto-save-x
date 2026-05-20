@@ -75,3 +75,4 @@ class TMDBDetailOut(BaseModel):
     media_type: str = Field(min_length=1, max_length=8)
     data: dict = {}
     update_weekdays: list[int] = []
+    episode_weekdays: list[int] = []

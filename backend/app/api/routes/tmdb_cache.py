@@ -266,7 +266,9 @@ def post_tmdb_cache_refresh(
         db.commit()
         db.refresh(row)
     else:
-        _, _data, _weekdays, row = get_tmdb_detail_cached(db, media_type=mt, tmdb_id=payload.tmdb_id, force_refresh=bool(payload.force))  # type: ignore[arg-type]
+        _, _data, _weekdays, _episode_weekdays, row = get_tmdb_detail_cached(
+            db, media_type=mt, tmdb_id=payload.tmdb_id, force_refresh=bool(payload.force)  # type: ignore[arg-type]
+        )
         db.commit()
         if row is not None:
             db.refresh(row)

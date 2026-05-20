@@ -3,6 +3,7 @@ import { ElMessageBox } from 'element-plus'
 
 import { fetchTMDBDetail, searchTMDB } from '@/api/media'
 import { browseDrive, fetchMagicRegex, fetchTasks, previewShare, previewShareBatch } from '@/api/tasks'
+import { fetchTMDBConfig } from '@/api/tmdb'
 import { fetchTaskSuggestions } from '@/api/resourceSearch'
 import type { DriveAccountItem, PluginItem } from '@/types/extensions'
 import type { TMDBBrief } from '@/types/media'
@@ -85,12 +86,16 @@ const state = reactive({
   enddate: '' as string | null,
   tmdb_id: null as number | null,
   tmdb_media_type: null as string | null,
+  runweek_mode: 'manual' as 'auto' | 'manual',
   runweek: [] as number[],
   allow_once: false,
   update_subdir_resave_mode: 'none',
   addition: {} as Record<string, any>,
   extra: {} as Record<string, any>,
 })
+
+const manualRunweekBackup = ref([] as number[])
+const autoRunweekDays = ref([] as number[])
 
 const taskSuggestions = reactive({
   visible: false,
@@ -307,14 +312,14 @@ function normalizeWeekdays(value: any) {
 async function applyRunweekFromTmdbUpdateWeekdays(tmdbId: number, mediaType: 'movie' | 'tv') {
   if (!props.modelValue) return
   if (state.allow_once) return
-  if (state.runweek.length) return
+  if (!tmdbLink.configured) return
   if (mediaType !== 'tv') return
   const id = Number(tmdbId) || 0
   if (id <= 0) return
   try {
     const res: any = await fetchTMDBDetail('tv', id)
-    const days = normalizeWeekdays(res?.update_weekdays)
-    if (days.length) state.runweek = days
+    const days = normalizeWeekdays(res?.episode_weekdays || res?.update_weekdays)
+    autoRunweekDays.value = days
   } catch {
     return
   }
@@ -452,8 +457,14 @@ async function confirmTmdbLink() {
   if (id <= 0) return
   state.tmdb_id = id
   state.tmdb_media_type = tmdbLink.type
-  if (!isEditing.value) {
-    await applyRunweekFromTmdbUpdateWeekdays(id, tmdbLink.type)
+  if (tmdbLink.type === 'tv' && tmdbLink.configured && !state.allow_once) {
+    if (state.runweek_mode !== 'auto') manualRunweekBackup.value = clone(state.runweek || [])
+    state.runweek_mode = 'auto'
+    state.runweek = []
+    await applyRunweekFromTmdbUpdateWeekdays(id, 'tv')
+  } else {
+    state.runweek_mode = 'manual'
+    autoRunweekDays.value = []
   }
   tmdbLink.visible = false
 }
@@ -461,6 +472,8 @@ async function confirmTmdbLink() {
 function clearTmdbLink() {
   state.tmdb_id = null
   state.tmdb_media_type = null
+  state.runweek_mode = 'manual'
+  autoRunweekDays.value = []
   ElMessage.success('已解除关联')
 }
 
@@ -930,7 +943,7 @@ async function autoFillSavepath(runId: number) {
   let root = ensureCategorySegment(baseRoot, category)
   root = normalizeSavepath(root)
   let suggested = normalizeSavepath(`${root}/${nameSeg}`)
-  if (needSeason) suggested = normalizeSavepath(`${suggested}/S01`)
+  if (needSeason) suggested = normalizeSavepath(`${suggested}`)
 
   saveAuto.applying = true
   try {
@@ -992,6 +1005,10 @@ function syncState() {
 
   const runweek = Array.isArray(state.extra.runweek) ? state.extra.runweek : []
   state.runweek = runweek.map((item: any) => Number(item)).filter((item: any) => item >= 1 && item <= 7)
+  const mode = String((state.extra as any)?.runweek_mode || '').trim().toLowerCase()
+  state.runweek_mode = mode === 'auto' ? 'auto' : 'manual'
+  manualRunweekBackup.value = clone(state.runweek || [])
+  autoRunweekDays.value = []
   state.allow_once = Boolean((state.extra as any)?.allow_once)
   state.update_subdir_resave_mode = String(state.extra.update_subdir_resave_mode || 'none')
 
@@ -1037,15 +1054,34 @@ watch(
 
 watch(
   () => [props.modelValue, props.task, props.plugins] as const,
-  ([visible]) => {
+  async ([visible]) => {
     if (!visible) return
     syncState()
     refreshMagicRegex()
-    if (!isEditing.value && !state.runweek.length) {
+    try {
+      const cfg = await fetchTMDBConfig()
+      tmdbLink.configured = Boolean(cfg?.has_api_key)
+    } catch {
+      tmdbLink.configured = false
+    }
+
+    if (!tmdbLink.configured && state.runweek_mode === 'auto') {
+      state.runweek_mode = 'manual'
+    }
+
+    if (!isEditing.value && state.runweek_mode === 'manual') {
       const id = Number(state.tmdb_id) || 0
       const mt = String(state.tmdb_media_type || '').toLowerCase()
-      if (id > 0 && (mt === 'tv' || mt === 'movie')) {
-        applyRunweekFromTmdbUpdateWeekdays(id, mt as any)
+      if (tmdbLink.configured && id > 0 && mt === 'tv') {
+        state.runweek_mode = 'auto'
+      }
+    }
+
+    if (state.runweek_mode === 'auto') {
+      const id = Number(state.tmdb_id) || 0
+      const mt = String(state.tmdb_media_type || '').toLowerCase()
+      if (id > 0 && mt === 'tv') {
+        applyRunweekFromTmdbUpdateWeekdays(id, 'tv')
       }
     }
     if (props.autoDeepSuggest && !isEditing.value) {
@@ -1090,7 +1126,8 @@ function closeDrawer() {
 function buildExtraPayload() {
   const extra = clone(state.extra || {})
   extra.allow_once = Boolean(state.allow_once)
-  extra.runweek = state.allow_once ? [] : clone(state.runweek || [])
+  extra.runweek_mode = state.runweek_mode
+  extra.runweek = state.allow_once ? [] : state.runweek_mode === 'auto' ? [] : clone(state.runweek || [])
   extra.update_subdir_resave_mode = state.update_subdir_resave_mode
   return extra
 }
@@ -1359,6 +1396,53 @@ const weekOptions = [
   { label: '六', value: 6 },
   { label: '日', value: 7 },
 ]
+
+const autoRunweekText = computed(() => {
+  const days = autoRunweekDays.value || []
+  if (!days.length) return ''
+  const map = new Map(weekOptions.map((x) => [x.value, x.label] as const))
+  return days.map((d) => `周${map.get(Number(d) as any) || d}`).join('、')
+})
+
+const autoRunweekDisabled = computed(() => {
+  if (state.allow_once) return true
+  if (!tmdbLink.configured) return true
+  const mt = String(state.tmdb_media_type || '').toLowerCase()
+  const id = Number(state.tmdb_id) || 0
+  return mt !== 'tv' || id <= 0
+})
+
+watch(
+  () => state.runweek_mode,
+  (mode) => {
+    if (!props.modelValue) return
+    if (state.allow_once) return
+    if (mode === 'auto') {
+      manualRunweekBackup.value = clone(state.runweek || [])
+      state.runweek = []
+      const id = Number(state.tmdb_id) || 0
+      const mt = String(state.tmdb_media_type || '').toLowerCase()
+      if (id > 0 && mt === 'tv') applyRunweekFromTmdbUpdateWeekdays(id, 'tv')
+      return
+    }
+    autoRunweekDays.value = []
+    if (!state.runweek.length && manualRunweekBackup.value.length) {
+      state.runweek = clone(manualRunweekBackup.value)
+    }
+  },
+)
+
+watch(
+  () => [state.tmdb_id, state.tmdb_media_type, state.runweek_mode, tmdbLink.configured] as const,
+  ([idRaw, mtRaw, mode, configured]) => {
+    if (!props.modelValue) return
+    if (mode !== 'auto') return
+    if (!configured) return
+    const id = Number(idRaw) || 0
+    const mt = String(mtRaw || '').toLowerCase()
+    if (id > 0 && mt === 'tv') applyRunweekFromTmdbUpdateWeekdays(id, 'tv')
+  },
+)
 
 async function autoResolveShareFolder(shareurl: string, runId: number) {
   const input = String(shareurl || '').trim()
@@ -1666,7 +1750,18 @@ watch(
           <el-input v-model="state.enddate" placeholder="例如：2099-12-31" />
         </el-form-item>
         <el-form-item label="运行星期">
-          <el-checkbox-group v-model="state.runweek" :disabled="state.allow_once">
+          <div class="drawer-form__switch-row" style="justify-content: flex-start; gap: 10px; flex-wrap: wrap">
+            <el-radio-group v-model="state.runweek_mode" :disabled="state.allow_once">
+              <el-radio-button label="auto" :disabled="autoRunweekDisabled">自动</el-radio-button>
+              <el-radio-button label="manual">手动</el-radio-button>
+            </el-radio-group>
+            <div v-if="state.runweek_mode === 'auto'" class="drawer-form__hint" style="margin: 0">
+              <span v-if="!tmdbLink.configured">请先在系统设置配置 TMDB</span>
+              <span v-else-if="autoRunweekText">已识别：{{ autoRunweekText }}</span>
+              <span v-else>识别中…</span>
+            </div>
+          </div>
+          <el-checkbox-group v-if="state.runweek_mode === 'manual'" v-model="state.runweek" :disabled="state.allow_once">
             <el-checkbox v-for="item in weekOptions" :key="item.value" :label="item.value">{{ item.label }}</el-checkbox>
           </el-checkbox-group>
         </el-form-item>

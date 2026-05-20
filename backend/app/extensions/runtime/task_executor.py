@@ -117,6 +117,29 @@ class TaskExecutor:
             task_data["guessit_tmdb_tv_rename_template"] = ""
             task_data["guessit_tmdb_movie_rename_template"] = ""
 
+        if str(getattr(task, "task_type", "") or "") == "drama":
+            extra = task_data.get("extra") or {}
+            runweek_mode = str(extra.get("runweek_mode") or "manual").strip().lower()
+            tmdb_id = int(task_data.get("tmdb_id") or 0)
+            tmdb_media_type = str(task_data.get("tmdb_media_type") or "").strip().lower()
+            task_data["tmdb_configured"] = False
+            task_data["tmdb_update_weekdays"] = []
+            task_data["tmdb_episode_weekdays"] = []
+            if runweek_mode == "auto" and tmdb_id > 0 and tmdb_media_type == "tv":
+                try:
+                    from app.services.tmdb_cache import get_tmdb_detail_cached
+
+                    configured, _detail, update_weekdays, episode_weekdays, _row = get_tmdb_detail_cached(
+                        self.db, media_type="tv", tmdb_id=tmdb_id
+                    )
+                    task_data["tmdb_configured"] = bool(configured)
+                    task_data["tmdb_update_weekdays"] = update_weekdays or []
+                    task_data["tmdb_episode_weekdays"] = episode_weekdays or []
+                except Exception:
+                    task_data["tmdb_configured"] = False
+                    task_data["tmdb_update_weekdays"] = []
+                    task_data["tmdb_episode_weekdays"] = []
+
         if not bool(task_data.get("disable_guessit_tmdb_fallback_rename")):
             tmdb_id = int(task_data.get("tmdb_id") or 0)
             tmdb_media_type = str(task_data.get("tmdb_media_type") or "").strip().lower()
@@ -124,7 +147,9 @@ class TaskExecutor:
                 try:
                     from app.services.tmdb_cache import get_tmdb_detail_cached
 
-                    configured, detail, _weekdays, _row = get_tmdb_detail_cached(self.db, media_type=tmdb_media_type, tmdb_id=tmdb_id)
+                    configured, detail, _weekdays, _episode_weekdays, _row = get_tmdb_detail_cached(
+                        self.db, media_type=tmdb_media_type, tmdb_id=tmdb_id
+                    )
                     if configured and isinstance(detail, dict):
                         task_data["tmdb_series_title"] = detail.get("name") if tmdb_media_type == "tv" else detail.get("title")
                         if tmdb_media_type == "tv":

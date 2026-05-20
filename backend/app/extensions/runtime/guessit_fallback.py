@@ -10,7 +10,24 @@ _RE_SPECIAL = re.compile(r"[\|\%\$]+")
 _RE_INVALID_FS = re.compile(r'[\\/:*?"<>|]+')
 _RE_SPACES = re.compile(r"\s+")
 
-_TRACE = str(os.getenv("DEBUG") or "").strip() == "1"
+_TRACE = os.getenv("DEBUG", "0").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+def _max_episode_number() -> int:
+    raw = str(os.getenv("XXM_GUESSIT_MAX_EPISODE") or "").strip()
+    if not raw:
+        return 9999
+    try:
+        n = int(raw)
+    except Exception:
+        return 9999
+    if n < 1:
+        return 9999
+    if n > 999999:
+        return 999999
+    return n
+
+
+_MAX_EPISODE_NUMBER = _max_episode_number()
 
 _VIDEO_EXTS = {
     ".mp4",
@@ -130,14 +147,14 @@ def _pick_leading_episode(base: str) -> int | None:
     s = sanitize_for_guessit(base)
     if not s:
         return None
-    m = re.match(r"^\s*(\d{1,3})\s*(?:[-._\s]+|$)", s)
+    m = re.match(r"^\s*(\d{1,4})\s*(?:[-._\s]+|$)", s)
     if not m:
         return None
     try:
         ep = int(m.group(1))
     except Exception:
         return None
-    if ep <= 0 or ep > 300:
+    if ep <= 0 or ep > _MAX_EPISODE_NUMBER:
         return None
     return ep
 
@@ -188,10 +205,10 @@ def _compile_strict_known_ep_rules() -> list[re.Pattern[str]]:
 _RE_STRICT_KNOWN_EP_RULES = _compile_strict_known_ep_rules()
 
 
-def _pick_known_episode_strict(base: str) -> int | None:
+def _pick_known_episode_strict_detail(base: str) -> tuple[int | None, str | None]:
     s = str(base or "").strip()
     if not s:
-        return None
+        return None, None
     for rule in _RE_STRICT_KNOWN_EP_RULES:
         m = rule.match(s)
         if not m:
@@ -200,13 +217,18 @@ def _pick_known_episode_strict(base: str) -> int | None:
             ep = int(m.group(1))
         except Exception:
             continue
-        if ep <= 0 or ep > 300:
+        if ep <= 0 or ep > _MAX_EPISODE_NUMBER:
             continue
-        return ep
-    return None
+        return ep, None
+    return None, None
 
 
-def _map_absolute_episode(abs_episode: int, tv_seasons: list[dict] | None) -> tuple[int, int] | None:
+def _pick_known_episode_strict(base: str) -> int | None:
+    ep, _ = _pick_known_episode_strict_detail(base)
+    return ep
+
+
+def _map_absolute_episode_to_season(abs_episode: int, tv_seasons: list[dict] | None) -> int | None:
     if not tv_seasons or abs_episode <= 0:
         return None
     seasons: list[tuple[int, int]] = []
@@ -226,9 +248,29 @@ def _map_absolute_episode(abs_episode: int, tv_seasons: list[dict] | None) -> tu
     remaining = abs_episode
     for sn, ec in seasons:
         if remaining <= ec:
-            return sn, remaining
+            return sn
         remaining -= ec
     return None
+
+
+def _pick_latest_season(tv_seasons: list[dict] | None) -> tuple[int, int] | None:
+    if not tv_seasons:
+        return None
+    seasons: list[tuple[int, int]] = []
+    for raw in tv_seasons:
+        if not isinstance(raw, dict):
+            continue
+        sn = raw.get("season_number")
+        ec = raw.get("episode_count")
+        if not isinstance(sn, int) or not isinstance(ec, int):
+            continue
+        if sn <= 0 or ec <= 0:
+            continue
+        seasons.append((sn, ec))
+    if not seasons:
+        return None
+    seasons.sort(key=lambda x: x[0])
+    return seasons[-1]
 
 
 def _pick_year(value: object) -> int | None:
@@ -287,7 +329,7 @@ def guessit_episode_target(
         _trace(trace_tag, f"skip: non-video ext={ext.lower()!r}")
         return None
 
-    strict_known_episode = _pick_known_episode_strict(base)
+    strict_known_episode, _ = _pick_known_episode_strict_detail(base)
     if strict_known_episode is not None:
         _trace(trace_tag, f"match strict-known pattern -> episode={strict_known_episode!r}")
 
@@ -323,9 +365,15 @@ def guessit_episode_target(
         _trace(trace_tag, "skip: episode not found")
         return None
     if season <= 0:
-        mapped = _map_absolute_episode(episode, tv_seasons) if (inferred_abs or guessed_is_episode) else None
-        if mapped:
-            season, episode = mapped
+        mapped_season = None
+        if inferred_abs or guessed_is_episode:
+            latest = _pick_latest_season(tv_seasons)
+            if latest and episode <= latest[1]:
+                mapped_season = latest[0]
+            else:
+                mapped_season = _map_absolute_episode_to_season(episode, tv_seasons)
+        if mapped_season:
+            season = mapped_season
             _trace(trace_tag, f"season missing -> mapped by tmdb seasons: S{season:02d}E{episode:02d}")
         else:
             if tv_seasons:
@@ -390,7 +438,7 @@ def guessit_episode_numbers(
     if ext.lower() not in _VIDEO_EXTS:
         return None, None
 
-    strict_known_episode = _pick_known_episode_strict(base)
+    strict_known_episode, _ = _pick_known_episode_strict_detail(base)
     sanitized = sanitize_for_guessit(base)
     if not sanitized:
         return None, None
@@ -420,9 +468,15 @@ def guessit_episode_numbers(
         return None, None
 
     if season <= 0:
-        mapped = _map_absolute_episode(episode, tv_seasons) if (inferred_abs or guessed_is_episode) else None
-        if mapped:
-            season, episode = mapped
+        mapped_season = None
+        if inferred_abs or guessed_is_episode:
+            latest = _pick_latest_season(tv_seasons)
+            if latest and episode <= latest[1]:
+                mapped_season = latest[0]
+            else:
+                mapped_season = _map_absolute_episode_to_season(episode, tv_seasons)
+        if mapped_season:
+            season = mapped_season
         else:
             if tv_seasons:
                 return None, None

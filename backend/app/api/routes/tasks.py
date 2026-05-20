@@ -835,7 +835,7 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
         try:
             from app.services.tmdb_cache import get_tmdb_detail_cached
 
-            configured, detail, _, _row = get_tmdb_detail_cached(db, media_type=tmdb_media_type, tmdb_id=tmdb_id)
+            configured, detail, _, _episode_weekdays, _row = get_tmdb_detail_cached(db, media_type=tmdb_media_type, tmdb_id=tmdb_id)
             if configured and isinstance(detail, dict):
                 tmdb_series_title = detail.get("name") if tmdb_media_type == "tv" else detail.get("title")
                 if tmdb_media_type == "tv":

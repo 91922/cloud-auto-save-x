@@ -62,4 +62,5 @@ export type TMDBDetail = {
   media_type: string
   data: Record<string, any>
   update_weekdays?: number[]
+  episode_weekdays?: number[]
 }

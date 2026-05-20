@@ -53,7 +53,7 @@ def _pick_search_keywords(db: Session, task: Task) -> list[str]:
     tmdb_id = getattr(task, "tmdb_id", None)
     if tmdb_media_type in {"tv", "movie"} and tmdb_id is not None:
         try:
-            configured, detail, _weekdays, _row = get_tmdb_detail_cached(
+            configured, detail, _weekdays, _episode_weekdays, _row = get_tmdb_detail_cached(
                 db,
                 media_type=tmdb_media_type,  # type: ignore[arg-type]
                 tmdb_id=int(tmdb_id),
