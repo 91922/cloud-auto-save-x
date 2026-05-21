@@ -13,8 +13,8 @@ const auth = useAuthStore()
 const loading = ref(false)
 const errorMessage = ref('')
 const form = reactive({
-  username: 'admin',
-  password: 'Admin@1234!',
+  username: '',
+  password: '',
 })
 
 async function handleSubmit() {
