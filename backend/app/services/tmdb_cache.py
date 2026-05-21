@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
@@ -92,20 +91,30 @@ def _infer_weekdays_from_weekday_samples(weekdays: list[int]) -> list[int]:
         return []
     unique = sorted({int(x) for x in samples if 1 <= int(x) <= 7})
     total = len(samples)
-    counts = Counter(samples)
-    most_day, most_count = counts.most_common(1)[0]
+    decay = 0.9
+    raw_counts: dict[int, int] = {}
+    weighted_counts: dict[int, float] = {}
+    weighted_total = 0.0
+    for i, day in enumerate(samples):
+        age = (total - 1) - i
+        w = float(decay**age)
+        weighted_total += w
+        raw_counts[int(day)] = int(raw_counts.get(int(day), 0)) + 1
+        weighted_counts[int(day)] = float(weighted_counts.get(int(day), 0.0)) + w
+
+    most_day, most_weight = max(weighted_counts.items(), key=lambda x: x[1])
     picked: list[int] = []
-    if total >= 4 and (most_count / total) >= 0.6:
+    if total >= 4 and weighted_total > 0 and (most_weight / weighted_total) >= 0.6:
         picked = [int(most_day)]
     else:
-        for d, c in counts.most_common():
-            if c >= 2 and (c / total) >= 0.2:
+        for d, w in sorted(weighted_counts.items(), key=lambda x: x[1], reverse=True):
+            if int(raw_counts.get(int(d), 0)) >= 2 and weighted_total > 0 and (w / weighted_total) >= 0.2:
                 picked.append(int(d))
         if not picked:
             picked = list({int(x) for x in samples})
 
     picked = sorted({int(x) for x in picked if 1 <= int(x) <= 7})
-    if total >= 7 and len(unique) >= 5 and (most_count / total) <= 0.4:
+    if total >= 7 and len(unique) >= 5 and weighted_total > 0 and (most_weight / weighted_total) <= 0.4:
         return unique
     return picked[:3]
 
