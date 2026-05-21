@@ -88,7 +88,6 @@ const state = reactive({
   tmdb_media_type: null as string | null,
   runweek_mode: 'manual' as 'auto' | 'manual',
   runweek: [] as number[],
-  allow_once: false,
   update_subdir_resave_mode: 'none',
   addition: {} as Record<string, any>,
   extra: {} as Record<string, any>,
@@ -311,7 +310,6 @@ function normalizeWeekdays(value: any) {
 
 async function applyRunweekFromTmdbUpdateWeekdays(tmdbId: number, mediaType: 'movie' | 'tv') {
   if (!props.modelValue) return
-  if (state.allow_once) return
   if (!tmdbLink.configured) return
   if (mediaType !== 'tv') return
   const id = Number(tmdbId) || 0
@@ -457,7 +455,7 @@ async function confirmTmdbLink() {
   if (id <= 0) return
   state.tmdb_id = id
   state.tmdb_media_type = tmdbLink.type
-  if (tmdbLink.type === 'tv' && tmdbLink.configured && !state.allow_once) {
+  if (tmdbLink.type === 'tv' && tmdbLink.configured) {
     if (state.runweek_mode !== 'auto') manualRunweekBackup.value = clone(state.runweek || [])
     state.runweek_mode = 'auto'
     state.runweek = []
@@ -1009,7 +1007,6 @@ function syncState() {
   state.runweek_mode = mode === 'auto' ? 'auto' : 'manual'
   manualRunweekBackup.value = clone(state.runweek || [])
   autoRunweekDays.value = []
-  state.allow_once = Boolean((state.extra as any)?.allow_once)
   state.update_subdir_resave_mode = String(state.extra.update_subdir_resave_mode || 'none')
 
   const additionValue: any = state.addition
@@ -1125,10 +1122,10 @@ function closeDrawer() {
 
 function buildExtraPayload() {
   const extra = clone(state.extra || {})
-  extra.allow_once = Boolean(state.allow_once)
   extra.runweek_mode = state.runweek_mode
-  extra.runweek = state.allow_once ? [] : state.runweek_mode === 'auto' ? [] : clone(state.runweek || [])
+  extra.runweek = state.runweek_mode === 'auto' ? [] : clone(state.runweek || [])
   extra.update_subdir_resave_mode = state.update_subdir_resave_mode
+  if ('allow_once' in extra) delete (extra as any).allow_once
   return extra
 }
 
@@ -1149,10 +1146,10 @@ function validateBeforeSubmit() {
 
 function runOnce() {
   if (!validateBeforeSubmit()) return
-  state.allow_once = true
-  state.runweek = []
-  state.enabled = true
   const account_name = state.account_choice !== '__AUTO__' ? state.account_choice : null
+  const extra = buildExtraPayload()
+  extra.allow_once = true
+  extra.runweek = []
   emit('run-once', {
     task_type: 'drama',
     taskname: state.taskname.trim(),
@@ -1170,7 +1167,7 @@ function runOnce() {
     tmdb_media_type: state.tmdb_media_type ?? null,
     enabled: true,
     addition: clone(state.addition || {}),
-    extra: buildExtraPayload(),
+    extra,
   })
 }
 
@@ -1405,7 +1402,6 @@ const autoRunweekText = computed(() => {
 })
 
 const autoRunweekDisabled = computed(() => {
-  if (state.allow_once) return true
   if (!tmdbLink.configured) return true
   const mt = String(state.tmdb_media_type || '').toLowerCase()
   const id = Number(state.tmdb_id) || 0
@@ -1416,7 +1412,6 @@ watch(
   () => state.runweek_mode,
   (mode) => {
     if (!props.modelValue) return
-    if (state.allow_once) return
     if (mode === 'auto') {
       manualRunweekBackup.value = clone(state.runweek || [])
       state.runweek = []
@@ -1751,7 +1746,7 @@ watch(
         </el-form-item>
         <el-form-item label="运行星期">
           <div class="drawer-form__switch-row" style="justify-content: flex-start; gap: 10px; flex-wrap: wrap">
-            <el-radio-group v-model="state.runweek_mode" :disabled="state.allow_once">
+            <el-radio-group v-model="state.runweek_mode">
               <el-radio-button label="auto" :disabled="autoRunweekDisabled">自动</el-radio-button>
               <el-radio-button label="manual">手动</el-radio-button>
             </el-radio-group>
@@ -1761,7 +1756,7 @@ watch(
               <span v-else>识别中…</span>
             </div>
           </div>
-          <el-checkbox-group v-if="state.runweek_mode === 'manual'" v-model="state.runweek" :disabled="state.allow_once">
+          <el-checkbox-group v-if="state.runweek_mode === 'manual'" v-model="state.runweek">
             <el-checkbox v-for="item in weekOptions" :key="item.value" :label="item.value">{{ item.label }}</el-checkbox>
           </el-checkbox-group>
         </el-form-item>

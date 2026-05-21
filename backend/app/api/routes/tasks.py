@@ -1002,7 +1002,7 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
                 item["file_name_re"] = file_name_re
         preview_list.append(item)
 
-    best: dict[str, tuple[float, int]] = {}
+    best: dict[str, tuple[tuple[float, float], int]] = {}
     for idx, f in enumerate(preview_list):
         if f.get("file_name_saved"):
             continue
@@ -1012,10 +1012,12 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
         if not target:
             continue
         key = os.path.splitext(target)[0] if ignore_ext else target
-        ts = _to_ts(f.get("updated_at")) or float("-inf")
+        sz = _pick_size(f)
+        ts = _to_ts(f.get("updated_at"))
+        score = (float(sz) if sz is not None else float("-inf"), ts if ts is not None else float("-inf"))
         prev = best.get(key)
-        if prev is None or ts > prev[0] or (ts == prev[0] and idx > prev[1]):
-            best[key] = (ts, idx)
+        if prev is None or score > prev[0] or (score == prev[0] and idx > prev[1]):
+            best[key] = (score, idx)
     if best:
         keep_idx = set(v[1] for v in best.values())
         for idx, f in enumerate(preview_list):
@@ -1024,7 +1026,7 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
             if f.get("file_name_saved") or f.get("dir"):
                 continue
             if f.get("file_name_re"):
-                f["file_name_saved"] = "重命名冲突（保留最新）"
+                f["file_name_saved"] = "重命名冲突（保留最大）"
                 f["file_name_re"] = None
 
     if re.search(r"\{I+\}", replace or ""):

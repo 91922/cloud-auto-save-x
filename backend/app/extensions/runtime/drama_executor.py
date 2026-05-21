@@ -469,20 +469,29 @@ class DramaTaskExecutor:
                     "file_name": origin_name,
                     "file_name_re": file_name_re,
                     "updated_at": updated_at,
+                    "size": raw.get("size"),
                     "dir": False,
                 }
             )
 
-        best: dict[str, tuple[float, int]] = {}
+        def _to_size(v):
+            try:
+                return int(v)
+            except Exception:
+                return None
+
+        best: dict[str, tuple[tuple[float, float], int]] = {}
         for idx, f in enumerate(candidates):
             target = str(f.get("file_name_re") or "")
             if not target:
                 continue
             key = os.path.splitext(target)[0] if ignore_extension else target
-            ts = _to_ts(f.get("updated_at")) or float("-inf")
+            sz = _to_size(f.get("size"))
+            ts = _to_ts(f.get("updated_at"))
+            score = (float(sz) if sz is not None else float("-inf"), ts if ts is not None else float("-inf"))
             prev = best.get(key)
-            if prev is None or ts > prev[0] or (ts == prev[0] and idx > prev[1]):
-                best[key] = (ts, idx)
+            if prev is None or score > prev[0] or (score == prev[0] and idx > prev[1]):
+                best[key] = (score, idx)
         keep_idx = set(v[1] for v in best.values())
         candidates = [f for idx, f in enumerate(candidates) if idx in keep_idx]
 
