@@ -23,6 +23,7 @@ from app.extensions.runtime.execution_log import ExecutionLog
 from app.extensions.runtime.magic_rename import MagicRename
 from app.models.drive_account import DriveAccount
 from app.models.task import Task
+from app.models.task_savepath_snapshot import TaskSavepathSnapshot
 from app.models.tmdb_media_cache import TMDBMediaCache
 from app.extensions.runtime.task_scheduler import task_scheduler_manager
 from app.extensions.runtime.task_executor import TaskExecutor
@@ -42,7 +43,16 @@ from app.schemas.task_browse import (
 )
 from app.schemas.task_magic_regex import MagicRegexOut, MagicRegexRuleOut
 from app.schemas.task_scheduler import TaskSchedulerSettingOut, TaskSchedulerSettingUpdateIn
-from app.schemas.task import StopCompletedDramaTasksOut, TaskCreateIn, TaskExecutionOut, TaskOut, TaskStatusIn, TaskUpdateIn
+from app.schemas.task import (
+    SavepathSnapshotSyncItemOut,
+    SavepathSnapshotSyncOut,
+    StopCompletedDramaTasksOut,
+    TaskCreateIn,
+    TaskExecutionOut,
+    TaskOut,
+    TaskStatusIn,
+    TaskUpdateIn,
+)
 from app.schemas.resource_search import TaskSuggestionListOut
 from app.schemas.task_repair import RepairBannedTasksOut
 from app.services import audit
@@ -50,6 +60,7 @@ from app.services.notifications.sender import send_runtime
 from app.services.notifications.task_notify import DRAMA_NOTIFY_TITLE, build_task_section
 from app.services.share_preview_batch import cache_clear as _preview_batch_cache_clear
 from app.services.share_preview_batch import preview_share_batch
+from app.services.drama_update_progress import build_drama_update_progress
 from app.services.drama_share_repair import repair_banned_drama_tasks
 from app.services.task_scheduler import get_or_create_task_scheduler_setting, update_task_scheduler_setting
 from app.services.resource_search import fetch_task_suggestions
@@ -148,6 +159,80 @@ def _load_tmdb_status_map(db: Session, items: list[object]) -> dict[tuple[str, i
     return out
 
 
+def _load_tmdb_payload_map(db: Session, items: list[object]) -> dict[tuple[str, int], dict[str, object] | None]:
+    keys: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in items:
+        if str(getattr(item, "task_type", "") or "") != "drama":
+            continue
+        key = _tmdb_cache_key(item)
+        if key is None or key in seen:
+            continue
+        if key[0] != "tv":
+            continue
+        seen.add(key)
+        keys.append(key)
+    if not keys:
+        return {}
+
+    language, poster_language = _tmdb_lang_pair(db)
+    tv_ids = [tid for mt, tid in keys if mt == "tv"]
+    if not tv_ids:
+        return {}
+
+    rows = (
+        db.execute(
+            select(TMDBMediaCache.media_type, TMDBMediaCache.tmdb_id, TMDBMediaCache.payload_json)
+            .where(
+                TMDBMediaCache.media_type == "tv",
+                TMDBMediaCache.tmdb_id.in_(tv_ids),
+                TMDBMediaCache.language == language,
+                TMDBMediaCache.poster_language == poster_language,
+            )
+            .order_by(TMDBMediaCache.updated_at.desc())
+        )
+        .all()
+    )
+    out: dict[tuple[str, int], dict[str, object] | None] = {}
+    for mt, tid, payload in rows:
+        key = (str(mt or "").strip().lower(), int(tid))
+        if key in out:
+            continue
+        if not payload:
+            out[key] = None
+            continue
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            parsed = None
+        out[key] = parsed if isinstance(parsed, dict) else None
+    return out
+
+
+def _load_savepath_snapshot_map(db: Session, items: list[object]) -> dict[str, TaskSavepathSnapshot]:
+    task_uids: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        if str(getattr(item, "task_type", "") or "") != "drama":
+            continue
+        uid = str(getattr(item, "task_uid", "") or "").strip()
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        task_uids.append(uid)
+    if not task_uids:
+        return {}
+    try:
+        rows = (
+            db.execute(select(TaskSavepathSnapshot).where(TaskSavepathSnapshot.task_uid.in_(task_uids)))
+            .scalars()
+            .all()
+        )
+    except Exception:
+        return {}
+    return {str(r.task_uid): r for r in rows if getattr(r, "task_uid", None)}
+
+
 def _get_tmdb_status(db: Session, mt: str, tid: int) -> str | None:
     language, poster_language = _tmdb_lang_pair(db)
     row = (
@@ -170,17 +255,35 @@ def _get_tmdb_status(db: Session, mt: str, tid: int) -> str | None:
     return status or None
 
 
-def _task_out(db: Session, item, *, tmdb_status_map: dict[tuple[str, int], str | None] | None = None) -> TaskOut:
+def _task_out(
+    db: Session,
+    item,
+    *,
+    tmdb_status_map: dict[tuple[str, int], str | None] | None = None,
+    tmdb_payload_map: dict[tuple[str, int], dict[str, object] | None] | None = None,
+    snapshot_map: dict[str, TaskSavepathSnapshot] | None = None,
+) -> TaskOut:
     raw_executions = list(getattr(item, "executions", None) or [])
     raw_executions.sort(key=lambda x: x.started_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
     tmdb_status: str | None = None
     tmdb_is_ended: bool | None = None
+    drama_update_progress = None
     key = _tmdb_cache_key(item)
     if key is not None:
         tmdb_status = tmdb_status_map.get(key) if isinstance(tmdb_status_map, dict) else _get_tmdb_status(db, key[0], key[1])
         if key[0] == "tv" and tmdb_status is not None:
             tmdb_is_ended = tmdb_status in ("Ended", "Canceled")
+        if (
+            key[0] == "tv"
+            and str(getattr(item, "task_type", "") or "") == "drama"
+            and isinstance(tmdb_payload_map, dict)
+            and isinstance(snapshot_map, dict)
+        ):
+            drama_update_progress = build_drama_update_progress(
+                tmdb_details=tmdb_payload_map.get(key),
+                snapshot=snapshot_map.get(str(getattr(item, "task_uid", "") or "").strip()),
+            )
 
     return TaskOut(
         id=item.id,
@@ -202,6 +305,7 @@ def _task_out(db: Session, item, *, tmdb_status_map: dict[tuple[str, int], str |
         tmdb_media_type=getattr(item, "tmdb_media_type", None),
         tmdb_status=tmdb_status,
         tmdb_is_ended=tmdb_is_ended,
+        drama_update_progress=drama_update_progress,
         enabled=item.enabled,
         addition=json.loads(item.addition_json) if item.addition_json else {},
         extra=json.loads(item.extra_json) if item.extra_json else {},
@@ -402,7 +506,18 @@ def _pick_children_count(payload: dict) -> int | None:
 def get_tasks(db: Session = Depends(get_db)):
     items = list_tasks(db)
     tmdb_status_map = _load_tmdb_status_map(db, items)
-    return [_task_out(db, item, tmdb_status_map=tmdb_status_map) for item in items]
+    tmdb_payload_map = _load_tmdb_payload_map(db, items)
+    snapshot_map = _load_savepath_snapshot_map(db, items)
+    return [
+        _task_out(
+            db,
+            item,
+            tmdb_status_map=tmdb_status_map,
+            tmdb_payload_map=tmdb_payload_map,
+            snapshot_map=snapshot_map,
+        )
+        for item in items
+    ]
 
 
 @router.post("/drama/stop-completed", response_model=StopCompletedDramaTasksOut, dependencies=[Depends(require_permissions(TASK_WRITE))])
@@ -465,6 +580,86 @@ def post_stop_completed_drama_tasks(request: Request, current: CurrentUser = Dep
     db.commit()
 
     return StopCompletedDramaTasksOut(checked=int(checked or 0), matched=len(matched_ids), stopped=stopped, task_ids=matched_ids[:50])
+
+
+@router.post("/drama/savepath-snapshots/sync", response_model=SavepathSnapshotSyncOut, dependencies=[Depends(require_permissions(TASK_WRITE))])
+def post_sync_drama_savepath_snapshots(
+    request: Request, current: CurrentUser = Depends(get_current_user), db: Session = Depends(get_db)
+):
+    items = (
+        db.execute(select(Task).where(Task.task_type == "drama").order_by(Task.id.desc()))
+        .scalars()
+        .all()
+    )
+    checked = len(items)
+    if not items:
+        return SavepathSnapshotSyncOut(checked=0, synced=0, skipped=0, failed=0, items=[])
+
+    manager = DatabaseAccountManager(db)
+    task_payloads = [{"shareurl": str(t.shareurl or ""), "account_name": getattr(t, "account_name", None)} for t in items]
+    manager.init_for_tasks(task_payloads)
+
+    synced = 0
+    skipped = 0
+    failed = 0
+    out_items: list[SavepathSnapshotSyncItemOut] = []
+    for task in items:
+        ok = False
+        msg = None
+        try:
+            payload = {"shareurl": str(task.shareurl or ""), "account_name": getattr(task, "account_name", None)}
+            adapter = manager.get_adapter_for_task(payload)
+            if adapter is None:
+                msg = "没有可用的驱动账号"
+                failed += 1
+            else:
+                if not getattr(adapter, "is_active", False):
+                    adapter.init()
+                from app.services.task_savepath_snapshot import capture_and_upsert_snapshot
+
+                account_name = str(getattr(adapter, "account_name", "") or getattr(task, "account_name", "") or "").strip()
+                row = capture_and_upsert_snapshot(
+                    db,
+                    task_uid=str(getattr(task, "task_uid", "") or "").strip(),
+                    savepath=str(getattr(task, "savepath", "") or "").strip(),
+                    adapter=adapter,
+                    account_name=account_name,
+                    emit_line=None,
+                )
+                if row is None:
+                    msg = "快照生成失败"
+                    skipped += 1
+                else:
+                    ok = True
+                    synced += 1
+        except Exception as e:
+            msg = str(e) or type(e).__name__
+            failed += 1
+
+        if len(out_items) < 50:
+            out_items.append(
+                SavepathSnapshotSyncItemOut(
+                    task_id=int(getattr(task, "id", 0) or 0),
+                    task_uid=str(getattr(task, "task_uid", "") or ""),
+                    taskname=str(getattr(task, "taskname", "") or ""),
+                    ok=ok,
+                    message=msg,
+                )
+            )
+
+    audit.write_audit_log(
+        db,
+        actor_user_id=current.user.id,
+        action="task.drama.sync_savepath_snapshots",
+        target_type="task",
+        target_id="drama",
+        ip=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        success=True,
+        detail=f"checked={checked}, synced={synced}, skipped={skipped}, failed={failed}",
+    )
+    db.commit()
+    return SavepathSnapshotSyncOut(checked=checked, synced=synced, skipped=skipped, failed=failed, items=out_items)
 
 
 @router.post('', response_model=TaskOut, dependencies=[Depends(require_permissions(TASK_WRITE))])

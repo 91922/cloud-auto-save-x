@@ -68,6 +68,18 @@ class TaskExecutionOut(BaseModel):
     plugins_snapshot: list[dict[str, Any]] = []
 
 
+class DramaUpdateProgressOut(BaseModel):
+    available: bool = False
+    tmdb_season: int | None = None
+    tmdb_episode: int | None = None
+    saved_season: int | None = None
+    saved_episode: int | None = None
+    behind_episodes: int | None = None
+    is_latest: bool | None = None
+    snapshot_captured_at: datetime | None = None
+    reason: str | None = None
+
+
 class TaskOut(BaseModel):
     id: int
     task_uid: str
@@ -88,6 +100,7 @@ class TaskOut(BaseModel):
     tmdb_media_type: str | None = None
     tmdb_status: str | None = None
     tmdb_is_ended: bool | None = None
+    drama_update_progress: DramaUpdateProgressOut | None = None
     enabled: bool
     addition: dict[str, Any] = {}
     extra: dict[str, Any] = {}
@@ -101,3 +114,19 @@ class StopCompletedDramaTasksOut(BaseModel):
     matched: int = 0
     stopped: int = 0
     task_ids: list[int] = []
+
+
+class SavepathSnapshotSyncItemOut(BaseModel):
+    task_id: int
+    task_uid: str
+    taskname: str
+    ok: bool
+    message: str | None = None
+
+
+class SavepathSnapshotSyncOut(BaseModel):
+    checked: int = 0
+    synced: int = 0
+    skipped: int = 0
+    failed: int = 0
+    items: list[SavepathSnapshotSyncItemOut] = []

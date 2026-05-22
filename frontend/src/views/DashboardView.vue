@@ -204,6 +204,48 @@ const taskSuccessRate = computed(() => {
   return success / total
 })
 
+const updateProgressSummary = computed(() => {
+  const tasks = dramaTasks.value.filter((t) => t.tmdb_id && String(t.tmdb_media_type || '').toLowerCase() === 'tv')
+  const linked = tasks.length
+  let latest = 0
+  let behind = 0
+  let unknown = 0
+  let behindTotal = 0
+  let behindMax = 0
+  for (const task of tasks) {
+    const p = task.drama_update_progress
+    if (!p || !p.available) {
+      unknown += 1
+      continue
+    }
+    if (p.is_latest) {
+      latest += 1
+      continue
+    }
+    const n = typeof p.behind_episodes === 'number' ? p.behind_episodes : null
+    if (n === null) {
+      unknown += 1
+      continue
+    }
+    if (n <= 0) {
+      latest += 1
+      continue
+    }
+    behind += 1
+    behindTotal += n
+    behindMax = Math.max(behindMax, n)
+  }
+  const ratio = linked > 0 ? latest / linked : null
+  const avgBehind = behind > 0 ? behindTotal / behind : null
+  return { linked, latest, behind, unknown, ratio, avgBehind, behindMax }
+})
+
+const updateProgressText = computed(() => {
+  const r = updateProgressSummary.value.ratio
+  if (r === null) return '--'
+  return formatPercent(r)
+})
+
 const successRateText = computed(() => {
   const v = taskSuccessRate.value
   if (v === null || v === undefined || Number.isNaN(v)) {
@@ -345,11 +387,11 @@ onMounted(() => {
         <div class="metric-tile__hint">本月成功执行次数</div>
       </div>
       <div class="glass-panel metric-tile">
-        <div class="metric-tile__label">网盘空间</div>
-        <div class="metric-tile__value">{{ capacitySpaceText }}</div>
+        <div class="metric-tile__label">网盘空间使用率</div>
+        <div class="metric-tile__value">{{ capacityOverview ? formatPercent(capacityOverview.summary.usage_ratio) : '--' }}</div>
         <div class="metric-tile__hint">
           <span v-if="capacityOverview">
-            使用率 {{ formatPercent(capacityOverview.summary.usage_ratio) }} · 预警 {{ capacityOverview.warning_accounts.length }}
+            {{ capacitySpaceText }} · 预警 {{ capacityOverview.warning_accounts.length }}
           </span>
           <span v-else>汇总已用 / 总容量</span>
         </div>
@@ -362,6 +404,16 @@ onMounted(() => {
             成功 {{ dramaOverview.summary.execution_success }} · 失败 {{ dramaOverview.summary.execution_failed }}
           </span>
           <span v-else>暂无执行记录</span>
+        </div>
+      </div>
+      <div class="glass-panel metric-tile">
+        <div class="metric-tile__label">最新剧集比例</div>
+        <div class="metric-tile__value">{{ updateProgressText }}</div>
+        <div class="metric-tile__hint">
+          <span v-if="updateProgressSummary.linked">
+            最新 {{ updateProgressSummary.latest }} · 落后 {{ updateProgressSummary.behind }} · 未知 {{ updateProgressSummary.unknown }}
+          </span>
+          <span v-else>仅统计已关联 TMDB 的任务</span>
         </div>
       </div>
     </section>
@@ -592,7 +644,7 @@ onMounted(() => {
 
 <style scoped>
 .dashboard-metrics {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .dot,

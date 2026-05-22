@@ -506,7 +506,9 @@ async function ensureTMDBDetailCached(tmdbId: number): Promise<TMDBDetail | null
   return detailPromises[id]
 }
 
-const enabledDramaTasks = computed(() => tasks.value.filter((t) => t.task_type === 'drama' && t.enabled))
+const enabledDramaTasks = computed(() =>
+  tasks.value.filter((t) => t.task_type === 'drama' && t.enabled && t.tmdb_id && String(t.tmdb_media_type || '').toLowerCase() === 'tv'),
+)
 
 const schedules = computed(() => {
   const list: Array<{

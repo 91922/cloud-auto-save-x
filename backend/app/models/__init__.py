@@ -14,6 +14,7 @@ from app.models.role import Role
 from app.models.task import Task
 from app.models.task_execution import TaskExecution
 from app.models.task_scheduler_setting import TaskSchedulerSetting
+from app.models.task_savepath_snapshot import TaskSavepathSnapshot
 from app.models.tmdb_cache_scheduler_setting import TMDBCacheSchedulerSetting
 from app.models.tmdb_setting import TMDBSetting
 from app.models.tmdb_media_cache import TMDBMediaCache
@@ -37,6 +38,7 @@ __all__ = [
     "Task",
     "TaskExecution",
     "TaskSchedulerSetting",
+    "TaskSavepathSnapshot",
     "TMDBCacheSchedulerSetting",
     "TMDBSetting",
     "TMDBMediaCache",

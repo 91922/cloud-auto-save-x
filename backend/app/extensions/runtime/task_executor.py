@@ -201,6 +201,7 @@ class TaskExecutor:
         adapter = account_manager.get_adapter_for_task(task_data)
         started_at = datetime.now(timezone.utc).astimezone(_DB_TZ)
         task_id = int(getattr(task, "id", 0) or 0)
+        snapshot_row = None
 
         if adapter is None:
             log.set_stage("select_account")
@@ -277,6 +278,21 @@ class TaskExecutor:
                         continue
                     log.line(f"RUN: {key}（task_after）")
             PluginHookRunner.task_after(plugins, [task_data], default_adapter or adapter, emit_line=log.line)
+            if persist_execution and task_id > 0:
+                try:
+                    from app.services.task_savepath_snapshot import capture_and_upsert_snapshot
+
+                    account_name = str(getattr(adapter, "account_name", "") or getattr(task, "account_name", "") or "").strip()
+                    snapshot_row = capture_and_upsert_snapshot(
+                        self.db,
+                        task_uid=str(getattr(task, "task_uid", "") or "").strip(),
+                        savepath=task_data.get("savepath"),
+                        adapter=adapter,
+                        account_name=account_name,
+                        emit_line=log.line,
+                    )
+                except Exception:
+                    snapshot_row = None
             log.set_stage("end")
             log.section("程序结束")
             finished_at_local = datetime.now(timezone.utc).astimezone()
@@ -373,4 +389,7 @@ class TaskExecutor:
             return execution
         self.db.add(execution)
         self.db.flush()
+        if snapshot_row is not None:
+            snapshot_row.task_execution_id = execution.id
+            self.db.flush()
         return execution

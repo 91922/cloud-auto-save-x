@@ -8,6 +8,7 @@ import {
   fetchTaskSchedulerSetting,
   fetchTasks,
   repairBannedDramaTasks,
+  syncDramaSavepathSnapshots,
   stopCompletedDramaTasks,
   setTaskStatus,
   updateTask,
@@ -32,6 +33,7 @@ const scheduler = ref<TaskSchedulerSetting | null>(null)
 const schedulerSaving = ref(false)
 const repairSaving = ref(false)
 const stopCompletedSaving = ref(false)
+const syncSnapshotsSaving = ref(false)
 
 const drawerVisible = ref(false)
 const currentTask = ref<TaskItem | null>(null)
@@ -150,6 +152,41 @@ function formatAccountLabel(task: TaskItem) {
   if (auto && driveType) return `自动：${auto.name}（${driveType}）`
   if (driveType) return `自动（${driveType}）`
   return '自动'
+}
+
+function formatEpisode(season?: number | null, episode?: number | null) {
+  const sn = Number(season)
+  const ep = Number(episode)
+  if (!Number.isFinite(sn) || sn <= 0 || !Number.isFinite(ep) || ep <= 0) return '-'
+  return `S${String(sn).padStart(2, '0')}E${String(ep).padStart(2, '0')}`
+}
+
+function progressTagText(task: TaskItem) {
+  if (!(task.tmdb_id && task.tmdb_media_type === 'tv')) return '-'
+  const p = task.drama_update_progress
+  if (!p) return '未知'
+  if (p.available && p.is_latest) return '最新'
+  if (p.available && typeof p.behind_episodes === 'number') return `落后 ${p.behind_episodes} 集`
+  return '未知'
+}
+
+function progressTagType(task: TaskItem) {
+  if (!(task.tmdb_id && task.tmdb_media_type === 'tv')) return 'info'
+  const p = task.drama_update_progress
+  if (p?.available && p.is_latest) return 'success'
+  if (p?.available && typeof p.behind_episodes === 'number') return p.behind_episodes > 0 ? 'warning' : 'success'
+  return 'info'
+}
+
+function progressTooltip(task: TaskItem) {
+  const p = task.drama_update_progress
+  if (!p) return null
+  return {
+    saved: formatEpisode(p.saved_season, p.saved_episode),
+    latest: formatEpisode(p.tmdb_season, p.tmdb_episode),
+    snapshot: p.snapshot_captured_at || '-',
+    reason: p.reason || '',
+  }
 }
 
 const filteredTasks = computed(() =>
@@ -827,6 +864,36 @@ async function confirmStopCompleted() {
   }
 }
 
+async function handleSyncSavepathSnapshots() {
+  try {
+    await ElMessageBox.confirm(
+      '将遍历追剧任务并刷新所有任务的保存路径快照（task_savepath_snapshots），可能耗时较久，是否继续？',
+      '同步保存路径快照',
+      { type: 'warning', confirmButtonText: '继续', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  syncSnapshotsSaving.value = true
+  try {
+    const res: any = await syncDramaSavepathSnapshots()
+    const checked = Number(res?.checked || 0)
+    const synced = Number(res?.synced || 0)
+    const skipped = Number(res?.skipped || 0)
+    const failed = Number(res?.failed || 0)
+    await ElMessageBox.alert(`同步完成：checked=${checked}，synced=${synced}，skipped=${skipped}，failed=${failed}`, '同步结果', {
+      type: 'success',
+      confirmButtonText: '确定',
+    })
+    await loadData()
+  } catch (e: any) {
+    const msg = String(e?.response?.data?.message || e?.response?.data?.detail || e?.message || '同步失败')
+    await ElMessageBox.alert(msg, '同步失败', { type: 'error', confirmButtonText: '确定' })
+  } finally {
+    syncSnapshotsSaving.value = false
+  }
+}
+
 onMounted(() => {
   loadData()
   window.addEventListener('resize', onResize, { passive: true })
@@ -845,6 +912,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="toolbar__right">
         <el-button type="primary" @click="loadData">刷新</el-button>
+        <el-button v-if="canWrite" :loading="syncSnapshotsSaving" @click="handleSyncSavepathSnapshots">同步保存快照</el-button>
         <el-button v-if="canRun" :loading="runAllDialog.running" :disabled="runAllDialog.running" @click="confirmRunAll">执行全部</el-button>
         <el-button v-if="canWrite" :loading="stopCompletedSaving" @click="confirmStopCompleted">停止已完结任务</el-button>
         <el-button v-if="canWrite" :loading="repairSaving" @click="confirmRepairBanned">修复失效任务</el-button>
@@ -919,6 +987,22 @@ onBeforeUnmount(() => {
           </template>
         </el-table-column>
         <el-table-column prop="savepath" label="保存路径" min-width="200" />
+        <el-table-column label="更新进度" width="120">
+          <template #default="{ row }">
+            <span v-if="!(row.tmdb_id && row.tmdb_media_type === 'tv')">-</span>
+            <el-tooltip v-else effect="dark" placement="top">
+              <template #content>
+                <div>
+                  <div>已存：{{ progressTooltip(row)?.saved }}</div>
+                  <div>最新：{{ progressTooltip(row)?.latest }}</div>
+                  <div>快照：{{ progressTooltip(row)?.snapshot }}</div>
+                  <div v-if="progressTooltip(row)?.reason">原因：{{ progressTooltip(row)?.reason }}</div>
+                </div>
+              </template>
+              <el-tag :type="progressTagType(row)" effect="plain">{{ progressTagText(row) }}</el-tag>
+            </el-tooltip>
+          </template>
+        </el-table-column>
         <el-table-column label="完结" width="80">
           <template #default="{ row }">
             <el-tag v-if="row.tmdb_media_type === 'tv' && row.tmdb_is_ended === true" type="success" effect="plain">完结</el-tag>
@@ -985,6 +1069,21 @@ onBeforeUnmount(() => {
           <div class="task-card__meta">
             <div class="task-card__meta-row"><span class="task-card__label">账号</span>{{ formatAccountLabel(row) }}</div>
             <div class="task-card__meta-row"><span class="task-card__label">路径</span>{{ row.savepath || '-' }}</div>
+            <div class="task-card__meta-row">
+              <span class="task-card__label">进度</span>
+              <span v-if="!(row.tmdb_id && row.tmdb_media_type === 'tv')">-</span>
+              <el-tooltip v-else effect="dark" placement="top">
+                <template #content>
+                  <div>
+                    <div>已存：{{ progressTooltip(row)?.saved }}</div>
+                    <div>最新：{{ progressTooltip(row)?.latest }}</div>
+                    <div>快照：{{ progressTooltip(row)?.snapshot }}</div>
+                    <div v-if="progressTooltip(row)?.reason">原因：{{ progressTooltip(row)?.reason }}</div>
+                  </div>
+                </template>
+                <el-tag :type="progressTagType(row)" effect="plain">{{ progressTagText(row) }}</el-tag>
+              </el-tooltip>
+            </div>
             <div class="task-card__meta-row">
               <span class="task-card__label">完结</span>
               <span v-if="row.tmdb_media_type === 'tv' && row.tmdb_is_ended === true">完结</span>

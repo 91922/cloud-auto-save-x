@@ -32,6 +32,17 @@ export type TaskItem = {
   tmdb_media_type?: string | null
   tmdb_status?: string | null
   tmdb_is_ended?: boolean | null
+  drama_update_progress?: {
+    available: boolean
+    tmdb_season?: number | null
+    tmdb_episode?: number | null
+    saved_season?: number | null
+    saved_episode?: number | null
+    behind_episodes?: number | null
+    is_latest?: boolean | null
+    snapshot_captured_at?: string | null
+    reason?: string | null
+  } | null
   enabled: boolean
   addition: Record<string, any>
   extra: Record<string, any>

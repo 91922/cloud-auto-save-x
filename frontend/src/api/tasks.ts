@@ -16,6 +16,11 @@ export async function fetchTasks() {
   return data
 }
 
+export async function syncDramaSavepathSnapshots() {
+  const { data } = await http.post('/tasks/drama/savepath-snapshots/sync')
+  return data
+}
+
 export async function createTask(payload: {
   task_uid?: string | null
   task_type: string

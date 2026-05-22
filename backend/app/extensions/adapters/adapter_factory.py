@@ -109,11 +109,13 @@ class AdapterFactory:
         cache_key = cls._make_cache_key(drive_type, runtime_config, account_name)
         cached = cls._instance_cache.get(cache_key)
         if cached is not None:
+            setattr(cached, "account_name", account_name or "")
             return cached
 
         # 创建新实例并缓存
         try:
             adapter = adapter_class(cookie=cookie, index=index, config=runtime_config, account_name=account_name)
+            setattr(adapter, "account_name", account_name or "")
             cls._instance_cache[cache_key] = adapter
             return adapter
         except Exception as e:
