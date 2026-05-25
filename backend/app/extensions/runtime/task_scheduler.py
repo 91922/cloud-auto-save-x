@@ -59,6 +59,8 @@ class TaskSchedulerManager:
             except OperationalError as e:
                 logger.error(f"任务调度配置加载失败: {e}")
                 return
+            except Exception as e:
+                logger.error(f"任务调度配置应用失败: {e}")
 
             try:
                 tmdb_cache_setting = get_or_create_tmdb_cache_scheduler_setting(db)
@@ -68,6 +70,8 @@ class TaskSchedulerManager:
             except OperationalError as e:
                 logger.error(f"TMDB 缓存调度配置加载失败: {e}")
                 return
+            except Exception as e:
+                logger.error(f"TMDB 缓存调度配置应用失败: {e}")
 
             try:
                 drive_probe_setting = get_or_create_drive_account_probe_scheduler_setting(db)
@@ -77,6 +81,8 @@ class TaskSchedulerManager:
             except OperationalError as e:
                 logger.error(f"驱动账号探测调度配置加载失败: {e}")
                 return
+            except Exception as e:
+                logger.error(f"驱动账号探测调度配置应用失败: {e}")
 
     def _apply_setting(self, setting: Any) -> None:
         if self.scheduler is None:
@@ -86,16 +92,22 @@ class TaskSchedulerManager:
             if self.scheduler.get_job(job_id):
                 self.scheduler.remove_job(job_id)
             return
-        trigger = CronTrigger.from_crontab(str(setting.crontab), timezone=str(setting.timezone or "Asia/Shanghai"))
-        self.scheduler.add_job(
-            run_drama_tasks,
-            trigger=trigger,
-            id=job_id,
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=60,
-        )
+        try:
+            trigger = CronTrigger.from_crontab(str(setting.crontab), timezone=str(setting.timezone or "Asia/Shanghai"))
+            self.scheduler.add_job(
+                run_drama_tasks,
+                trigger=trigger,
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+        except Exception as e:
+            logger.error(f"任务调度 crontab 无效 job_id={job_id} crontab={getattr(setting, 'crontab', '')}: {e}")
+            if self.scheduler.get_job(job_id):
+                self.scheduler.remove_job(job_id)
+            return
 
     def _apply_tmdb_cache_setting(self, setting: Any) -> None:
         if self.scheduler is None:
@@ -105,16 +117,22 @@ class TaskSchedulerManager:
             if self.scheduler.get_job(job_id):
                 self.scheduler.remove_job(job_id)
             return
-        trigger = CronTrigger.from_crontab(str(setting.crontab), timezone=str(setting.timezone or "Asia/Shanghai"))
-        self.scheduler.add_job(
-            run_tmdb_cache_refresh,
-            trigger=trigger,
-            id=job_id,
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=60,
-        )
+        try:
+            trigger = CronTrigger.from_crontab(str(setting.crontab), timezone=str(setting.timezone or "Asia/Shanghai"))
+            self.scheduler.add_job(
+                run_tmdb_cache_refresh,
+                trigger=trigger,
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+        except Exception as e:
+            logger.error(f"TMDB 缓存调度 crontab 无效 job_id={job_id} crontab={getattr(setting, 'crontab', '')}: {e}")
+            if self.scheduler.get_job(job_id):
+                self.scheduler.remove_job(job_id)
+            return
 
     def _apply_drive_account_probe_setting(self, setting: Any) -> None:
         if self.scheduler is None:
@@ -125,16 +143,22 @@ class TaskSchedulerManager:
                 self.scheduler.remove_job(job_id)
                 logger.info("已移除驱动账号探测调度")
             return
-        trigger = CronTrigger.from_crontab(str(setting.crontab), timezone=str(setting.timezone or "Asia/Shanghai"))
-        self.scheduler.add_job(
-            run_drive_account_probe,
-            trigger=trigger,
-            id=job_id,
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=60,
-        )
+        try:
+            trigger = CronTrigger.from_crontab(str(setting.crontab), timezone=str(setting.timezone or "Asia/Shanghai"))
+            self.scheduler.add_job(
+                run_drive_account_probe,
+                trigger=trigger,
+                id=job_id,
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+        except Exception as e:
+            logger.error(f"驱动账号探测调度 crontab 无效 job_id={job_id} crontab={getattr(setting, 'crontab', '')}: {e}")
+            if self.scheduler.get_job(job_id):
+                self.scheduler.remove_job(job_id)
+            return
         job = self.scheduler.get_job(job_id)
         logger.info(
             "已加载驱动账号探测调度 enabled_only=%s crontab=%s timezone=%s next_run=%s",
