@@ -163,7 +163,7 @@ def repair_banned_drama_tasks(db: Session) -> dict:
             changed = False
             _msg = None
             for kw in _pick_search_keywords(db, task):
-                suggestions, changed, _msg = fetch_task_suggestions(db, keyword=kw, deep=1)
+                suggestions, changed, _msg = fetch_task_suggestions(db, keyword=kw, deep=1, drive_type=drive_type)
                 if debug:
                     print(f"[repair] task_id={task_id} keyword={kw} suggestions_count={len(suggestions or [])} msg={str(_msg or '')}")
                 if suggestions:

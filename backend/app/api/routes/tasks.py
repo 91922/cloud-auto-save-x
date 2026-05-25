@@ -389,9 +389,10 @@ def list_magic_regex(db: Session = Depends(get_db)) -> MagicRegexOut:
 
 
 @router.get("/suggestions", response_model=TaskSuggestionListOut, dependencies=[Depends(require_permissions(TASK_READ))])
-def get_task_suggestions(q: str = "", d: int = 0, db: Session = Depends(get_db)) -> TaskSuggestionListOut:
+def get_task_suggestions(q: str = "", d: int = 0, drive_type: str = "", db: Session = Depends(get_db)) -> TaskSuggestionListOut:
     try:
-        items, changed, msg = fetch_task_suggestions(db, keyword=q, deep=d)
+        dt = str(drive_type or "").strip() or None
+        items, changed, msg = fetch_task_suggestions(db, keyword=q, deep=d, drive_type=dt)
         if changed:
             db.commit()
         return TaskSuggestionListOut(success=True, data=items, message=msg)
