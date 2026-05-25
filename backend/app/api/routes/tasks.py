@@ -64,7 +64,7 @@ from app.services.drama_update_progress import build_drama_update_progress
 from app.services.drama_share_repair import repair_banned_drama_tasks
 from app.services.task_scheduler import get_or_create_task_scheduler_setting, update_task_scheduler_setting
 from app.services.resource_search import fetch_task_suggestions
-from app.services.tasks import create_task, delete_task, get_task, list_tasks, set_task_enabled, update_task
+from app.services.tasks import create_task, delete_task, get_task, list_tasks_recent_executions, set_task_enabled, update_task
 from app.services.tmdb_settings import get_or_create_tmdb_setting, get_tmdb_runtime_config
 
 router = APIRouter()
@@ -495,7 +495,7 @@ def _pick_children_count(payload: dict) -> int | None:
 
 @router.get('', response_model=list[TaskOut], dependencies=[Depends(require_permissions(TASK_READ))])
 def get_tasks(db: Session = Depends(get_db)):
-    items = list_tasks(db)
+    items = list_tasks_recent_executions(db, limit=3)
     tmdb_status_map = _load_tmdb_status_map(db, items)
     tmdb_payload_map = _load_tmdb_payload_map(db, items)
     snapshot_map = _load_savepath_snapshot_map(db, items)
