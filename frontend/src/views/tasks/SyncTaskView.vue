@@ -474,12 +474,31 @@ function parseSseBlock(block: string) {
 
 function appendRunLine(text: string) {
   runLogDialog.content += `${text}\n`
+  scrollRunLogToBottom()
+}
+
+function scrollRunLogToBottom() {
   nextTick(() => {
     const el = runLogPre.value
     if (!el) return
     el.scrollTop = el.scrollHeight
   })
 }
+
+watch(
+  () => runLogDialog.visible,
+  (v) => {
+    if (v) scrollRunLogToBottom()
+  },
+)
+
+watch(
+  () => runLogDialog.content,
+  () => {
+    if (!runLogDialog.visible) return
+    scrollRunLogToBottom()
+  },
+)
 
 function resetRunFileStats() {
   runFileStats.total_files = 0
@@ -1228,6 +1247,23 @@ onMounted(loadData)
             </el-tag>
           </template>
         </el-tree>
+      </div>
+
+      <el-divider content-position="left">原始日志</el-divider>
+      <div
+        ref="runLogPre"
+        style="
+          height: 78px;
+          overflow-y: auto;
+          padding: 8px 10px;
+          border-radius: 8px;
+          background: var(--el-fill-color-light);
+          border: 1px solid var(--el-border-color-lighter);
+        "
+      >
+        <pre style="margin: 0; font-size: 12px; line-height: 22px; white-space: pre-wrap; word-break: break-word">{{
+          runLogDialog.content || ''
+        }}</pre>
       </div>
     </el-dialog>
   </div>

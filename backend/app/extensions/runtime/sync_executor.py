@@ -436,6 +436,7 @@ class SyncExecutor:
             execution.heartbeat_at = datetime.now()
             self.db.commit()
             send_sync_execution_notification(self.db, task, execution)
+            log.section("同步完成")
             return execution
         except Exception as exc:
             message = getattr(exc, "message", None) or str(exc).strip() or type(exc).__name__
