@@ -5,9 +5,13 @@
 """
 from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple, Optional, Any
+import logging
 import random
 import threading
 import time
+
+
+logger = logging.getLogger(__name__)
 
 
 class BaseCloudDriveAdapter(ABC):
@@ -30,12 +34,20 @@ class BaseCloudDriveAdapter(ABC):
         }
     ]
 
-    def __init__(self, cookie: str = "", index: int = 0, config: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        cookie: str = "",
+        index: int = 0,
+        config: dict[str, Any] | None = None,
+        *,
+        no_login: bool = False,
+    ):
         self.config = self.resolve_runtime_config(config=config, cookie=cookie)
         self.cookie = self.serialize_config(self.config)
         self.index = index + 1
         self.is_active = False
         self.nickname = ""
+        self.no_login = bool(no_login)
 
         self._rate_limit_min_interval = 0.05
         self._rate_limit_max_interval = 0.10
@@ -371,9 +383,9 @@ class BaseCloudDriveAdapter(ABC):
                 dir_paths_exist_arr.append(
                     {"file_path": dir_path, "fid": new_dir["fid"]}
                 )
-                print(f"创建文件夹：{dir_path}")
+                logger.info("创建文件夹：%s", dir_path)
             else:
-                print(f"创建文件夹：{dir_path} 失败, {mkdir_return.get('message', '未知错误')}")
+                logger.warning("创建文件夹：%s 失败, %s", dir_path, mkdir_return.get("message", "未知错误"))
 
         # 储存目标目录的fid
         for dir_path in dir_paths_exist_arr:

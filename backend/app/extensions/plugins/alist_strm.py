@@ -1,10 +1,14 @@
 import re
+import logging
 import requests
 
 """
     配合 alist-strm 项目，触发特定配置运行
     https://github.com/tefuirZ/alist-strm
 """
+
+
+logger = logging.getLogger(__name__)
 
 
 class Alist_strm:
@@ -22,7 +26,7 @@ class Alist_strm:
                 if key in kwargs:
                     setattr(self, key, kwargs[key])
                 else:
-                    print(f"{self.__class__.__name__} 模块缺少必要参数: {key}")
+                    logger.warning("%s 模块缺少必要参数: %s", self.__class__.__name__, key)
             if self.url and self.cookie and self.config_id:
                 if self.get_info(self.config_id):
                     self.is_active = True
@@ -47,12 +51,12 @@ class Alist_strm:
                     for item in matchs
                     if item[0] in config_id_str.split(",")
                 ]
-                print(f"alist-strm配置运行: {config_name}")
+                logger.info("alist-strm配置运行: %s", config_name)
                 return True
             else:
-                print(f"alist-strm配置运行: 匹配失败❌，请检查网络连通和cookie有效性")
+                logger.warning("alist-strm配置运行: 匹配失败，请检查网络连通和cookie有效性")
         except Exception as e:
-            print(f"获取alist-strm配置信息出错: {e}")
+            logger.exception("获取alist-strm配置信息出错: %s", e)
         return False
 
     def run_selected_configs(self, selected_configs_str):
@@ -61,7 +65,7 @@ class Alist_strm:
         try:
             selected_configs = [int(x.strip()) for x in selected_configs_str.split(",")]
         except ValueError:
-            print("🔗 alist-strm配置运行: 出错❌ id应以,分割")
+            logger.warning("🔗 alist-strm配置运行: 出错 id应以,分割")
             return False
         data = [("selected_configs", config_id) for config_id in selected_configs]
         data.append(("action", "run_selected"))
@@ -73,10 +77,10 @@ class Alist_strm:
             match = re.search(r'role="alert">\s*([^<]+)\s*<button', html_content)
             if match:
                 alert = match.group(1).strip()
-                print(f"🔗 alist-strm配置运行: {alert}✅")
+                logger.info("🔗 alist-strm配置运行: %s", alert)
                 return True
             else:
-                print(f"🔗 alist-strm配置运行: 失败❌")
+                logger.warning("🔗 alist-strm配置运行: 失败")
         except Exception as e:
-            print(f"Error: {e}")
+            logger.exception("Error: %s", e)
         return False

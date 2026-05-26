@@ -1,5 +1,9 @@
 import os
+import logging
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class Plex:
@@ -18,7 +22,7 @@ class Plex:
                 if key in kwargs:
                     setattr(self, key, kwargs[key])
                 else:
-                    print(f"{self.__class__.__name__} 模块缺少必要参数: {key}")
+                    logger.warning("%s 模块缺少必要参数: %s", self.__class__.__name__, key)
             if self.url and self.token and self.quark_root_path:
                 if self.get_info():
                     self.is_active = True
@@ -41,14 +45,12 @@ class Plex:
             response = requests.get(f"{self.url}/", headers=headers)
             if response.status_code == 200:
                 info = response.json()["MediaContainer"]
-                print(
-                    f"Plex媒体库: {info.get('friendlyName','')} v{info.get('version','')}"
-                )
+                logger.info("Plex媒体库: %s v%s", info.get("friendlyName", ""), info.get("version", ""))
                 return True
             else:
-                print(f"Plex媒体库: 连接失败❌ 状态码：{response.status_code}")
+                logger.warning("Plex媒体库: 连接失败 状态码：%s", response.status_code)
         except Exception as e:
-            print(f"获取Plex媒体库信息出错: {e}")
+            logger.exception("获取Plex媒体库信息出错: %s", e)
         return False
 
     def refresh(self, folder_path):
@@ -66,17 +68,13 @@ class Plex:
                         refresh_url = f"{self.url}/library/sections/{library['key']}/refresh?path={folder_path}"
                         refresh_response = requests.get(refresh_url, headers=headers)
                         if refresh_response.status_code == 200:
-                            print(
-                                f"🎞️ 刷新Plex媒体库：{library['title']} [{folder_path}] 成功✅"
-                            )
+                            logger.info("🎞️ 刷新Plex媒体库：%s [%s] 成功", library.get("title"), folder_path)
                             return True
                         else:
-                            print(
-                                f"🎞️ 刷新Plex媒体库：刷新请求失败❌ 状态码：{refresh_response.status_code}"
-                            )
-            print(f"🎞️ 刷新Plex媒体库：{folder_path} 未找到匹配的媒体库❌")
+                            logger.warning("🎞️ 刷新Plex媒体库：刷新请求失败 状态码：%s", refresh_response.status_code)
+            logger.warning("🎞️ 刷新Plex媒体库：%s 未找到匹配的媒体库", folder_path)
         except Exception as e:
-            print(f"刷新Plex媒体库出错: {e}")
+            logger.exception("刷新Plex媒体库出错: %s", e)
         return False
 
     def _get_libraries(self):
@@ -89,7 +87,7 @@ class Plex:
                 libraries = response.json()["MediaContainer"].get("Directory", [])
                 return libraries
             else:
-                print(f"🎞️ 获取Plex媒体库信息失败❌ 状态码：{response.status_code}")
+                logger.warning("🎞️ 获取Plex媒体库信息失败 状态码：%s", response.status_code)
         except Exception as e:
-            print(f"获取Plex媒体库信息出错: {e}")
+            logger.exception("获取Plex媒体库信息出错: %s", e)
         return []

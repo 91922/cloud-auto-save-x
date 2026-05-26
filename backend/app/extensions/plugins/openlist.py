@@ -3,8 +3,12 @@ import random
 import threading
 import posixpath
 import re
+import logging
 import requests
 from cachetools import TTLCache
+
+
+logger = logging.getLogger(__name__)
 
 
 class Openlist:
@@ -129,7 +133,7 @@ class Openlist:
             data = self.list_dir("/", page=1, per_page=1, refresh=False)
             return data.get("code") == 200
         except Exception as e:
-            print(f"{self.plugin_name}: 连接失败 {e}")
+            logger.warning("%s: 连接失败 %s", self.plugin_name, e)
             return False
 
     def register_driver(self, key, *, mount_path, root_dir="/", password=""):
@@ -360,12 +364,12 @@ class Openlist:
                 target = self._norm_path(posixpath.join(mount_path, rel))
                 ok = self.refresh_dir(target, driver=driver or None, password=password)
                 if ok:
-                    print(f"{self.plugin_name}: 刷新目录成功 {target}")
+                    logger.info("%s: 刷新目录成功 %s", self.plugin_name, target)
                 else:
-                    print(f"{self.plugin_name}: 刷新目录失败 {target}")
+                    logger.warning("%s: 刷新目录失败 %s", self.plugin_name, target)
             return task
         except Exception as e:
-            print(f"{self.plugin_name}: 运行出错 {e}")
+            logger.exception("%s: 运行出错 %s", self.plugin_name, e)
             return task
 
     def _get_stale(self, cache_key):

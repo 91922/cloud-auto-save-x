@@ -28,6 +28,9 @@ from app.extensions.runtime.task_executor import TaskExecutor
 from app.core.errors import ApiError
 
 
+logger = logging.getLogger(__name__)
+
+
 class TaskSchedulerManager:
     def __init__(self):
         self.scheduler: BackgroundScheduler | None = None
@@ -51,7 +54,7 @@ class TaskSchedulerManager:
                 misfire_grace_time=60,
             )
         except Exception as e:
-            logging.error(f"同步执行兜底调度加载失败: {e}")
+            logger.error(f"同步执行兜底调度加载失败: {e}")
 
     def shutdown(self) -> None:
         if self.scheduler is None:
@@ -69,10 +72,10 @@ class TaskSchedulerManager:
                 db.refresh(setting)
                 self._apply_setting(setting)
             except OperationalError as e:
-                logging.error(f"任务调度配置加载失败: {e}")
+                logger.error(f"任务调度配置加载失败: {e}")
                 return
             except Exception as e:
-                logging.error(f"任务调度配置应用失败: {e}")
+                logger.error(f"任务调度配置应用失败: {e}")
 
             try:
                 tmdb_cache_setting = get_or_create_tmdb_cache_scheduler_setting(db)
@@ -80,10 +83,10 @@ class TaskSchedulerManager:
                 db.refresh(tmdb_cache_setting)
                 self._apply_tmdb_cache_setting(tmdb_cache_setting)
             except OperationalError as e:
-                logging.error(f"TMDB 缓存调度配置加载失败: {e}")
+                logger.error(f"TMDB 缓存调度配置加载失败: {e}")
                 return
             except Exception as e:
-                logging.error(f"TMDB 缓存调度配置应用失败: {e}")
+                logger.error(f"TMDB 缓存调度配置应用失败: {e}")
 
             try:
                 drive_probe_setting = get_or_create_drive_account_probe_scheduler_setting(db)
@@ -91,10 +94,10 @@ class TaskSchedulerManager:
                 db.refresh(drive_probe_setting)
                 self._apply_drive_account_probe_setting(drive_probe_setting)
             except OperationalError as e:
-                logging.error(f"驱动账号探测调度配置加载失败: {e}")
+                logger.error(f"驱动账号探测调度配置加载失败: {e}")
                 return
             except Exception as e:
-                logging.error(f"驱动账号探测调度配置应用失败: {e}")
+                logger.error(f"驱动账号探测调度配置应用失败: {e}")
 
     def _apply_setting(self, setting: Any) -> None:
         if self.scheduler is None:
@@ -116,7 +119,7 @@ class TaskSchedulerManager:
                 misfire_grace_time=60,
             )
         except Exception as e:
-            logging.error(f"任务调度 crontab 无效 job_id={job_id} crontab={getattr(setting, 'crontab', '')}: {e}")
+            logger.error(f"任务调度 crontab 无效 job_id={job_id} crontab={getattr(setting, 'crontab', '')}: {e}")
             if self.scheduler.get_job(job_id):
                 self.scheduler.remove_job(job_id)
             return
@@ -128,7 +131,7 @@ class TaskSchedulerManager:
         if not bool(getattr(setting, "enabled", False)):
             if self.scheduler.get_job(job_id):
                 self.scheduler.remove_job(job_id)
-                logging.info("已移除 TMDB 缓存定时刷新调度")
+                logger.info("已移除 TMDB 缓存定时刷新调度")
             return
         try:
             trigger = CronTrigger.from_crontab(str(setting.crontab), timezone=str(setting.timezone or "Asia/Shanghai"))
@@ -142,12 +145,12 @@ class TaskSchedulerManager:
                 misfire_grace_time=60,
             )
         except Exception as e:
-            logging.error(f"TMDB 缓存调度 crontab 无效 job_id={job_id} crontab={getattr(setting, 'crontab', '')}: {e}")
+            logger.error(f"TMDB 缓存调度 crontab 无效 job_id={job_id} crontab={getattr(setting, 'crontab', '')}: {e}")
             if self.scheduler.get_job(job_id):
                 self.scheduler.remove_job(job_id)
             return
         job = self.scheduler.get_job(job_id)
-        logging.info(
+        logger.info(
             "已加载 TMDB 缓存定时刷新调度 only_refresh_linked_tasks=%s max_items_per_run=%s crontab=%s timezone=%s next_run=%s",
             bool(getattr(setting, "only_refresh_linked_tasks", True)),
             int(getattr(setting, "max_items_per_run", 200) or 200),
@@ -164,7 +167,7 @@ class TaskSchedulerManager:
         if not bool(getattr(setting, "enabled", False)):
             if self.scheduler.get_job(job_id):
                 self.scheduler.remove_job(job_id)
-                logging.info("已移除驱动账号探测调度")
+                logger.info("已移除驱动账号探测调度")
             return
         try:
             trigger = CronTrigger.from_crontab(str(setting.crontab), timezone=str(setting.timezone or "Asia/Shanghai"))
@@ -178,12 +181,12 @@ class TaskSchedulerManager:
                 misfire_grace_time=60,
             )
         except Exception as e:
-            logging.error(f"驱动账号探测调度 crontab 无效 job_id={job_id} crontab={getattr(setting, 'crontab', '')}: {e}")
+            logger.error(f"驱动账号探测调度 crontab 无效 job_id={job_id} crontab={getattr(setting, 'crontab', '')}: {e}")
             if self.scheduler.get_job(job_id):
                 self.scheduler.remove_job(job_id)
             return
         job = self.scheduler.get_job(job_id)
-        logging.info(
+        logger.info(
             "已加载驱动账号探测调度 enabled_only=%s crontab=%s timezone=%s next_run=%s",
             bool(getattr(setting, "enabled_only", True)),
             str(getattr(setting, "crontab", "")),
@@ -240,7 +243,7 @@ def run_sync_execution_recovery() -> None:
             if n or int(cleanup.get("deleted_executions") or 0) or int(cleanup.get("deleted_files") or 0):
                 db.commit()
                 if cleanup.get("deleted_executions") or cleanup.get("deleted_files"):
-                    logging.info(
+                    logger.info(
                         "同步执行历史清理完成 sync_tasks=%s deleted_executions=%s deleted_files=%s",
                         int(cleanup.get("sync_tasks") or 0),
                         int(cleanup.get("deleted_executions") or 0),
@@ -249,10 +252,10 @@ def run_sync_execution_recovery() -> None:
             else:
                 db.rollback()
         except OperationalError as e:
-            logging.error(f"同步执行兜底调度失败: {e}")
+            logger.error(f"同步执行兜底调度失败: {e}")
             db.rollback()
         except Exception as e:
-            logging.error(f"同步执行兜底调度异常: {e}")
+            logger.error(f"同步执行兜底调度异常: {e}")
             db.rollback()
 
 
@@ -273,7 +276,7 @@ def run_tmdb_cache_refresh() -> None:
                 result = refresh_expired_cache(db, max_items=max_items, force=True)
             deleted = purge_cold_cache(db, retention_days=retention_days)
             db.commit()
-            logging.info(
+            logger.info(
                 "TMDB 缓存定时刷新执行完成 only_refresh_linked_tasks=%s max_items_per_run=%s refreshed=%s targets=%s configured=%s purged=%s",
                 only_linked,
                 max_items,
@@ -284,7 +287,7 @@ def run_tmdb_cache_refresh() -> None:
             )
         except Exception as e:
             db.rollback()
-            logging.warning(
+            logger.warning(
                 "TMDB 缓存定时刷新执行失败 only_refresh_linked_tasks=%s max_items_per_run=%s retention_days=%s err=%s",
                 only_linked,
                 max_items,
@@ -304,7 +307,7 @@ def run_drive_account_probe() -> None:
             .scalars()
             .all()
         )
-        logging.info("开始执行驱动账号自动探测 enabled_only=%s accounts=%s", enabled_only, len(accounts))
+        logger.info("开始执行驱动账号自动探测 enabled_only=%s accounts=%s", enabled_only, len(accounts))
         ok = 0
         skipped = 0
         failed = 0
@@ -321,16 +324,16 @@ def run_drive_account_probe() -> None:
                     sign_in_drive_account(db, int(account.id))
                 except ApiError as exc:
                     if exc.code in {"DRIVE_SIGNIN_UNSUPPORTED"}:
-                        logging.info("驱动账号自动签到不支持 account_id=%s", getattr(account, "id", None))
+                        logger.info("驱动账号自动签到不支持 account_id=%s", getattr(account, "id", None))
                     else:
-                        logging.warning(
+                        logger.warning(
                             "驱动账号自动签到失败 account_id=%s code=%s msg=%s",
                             getattr(account, "id", None),
                             exc.code,
                             exc.message,
                         )
                 except Exception as exc:
-                    logging.warning("驱动账号自动签到异常 account_id=%s err=%s", getattr(account, "id", None), str(exc))
+                    logger.warning("驱动账号自动签到异常 account_id=%s err=%s", getattr(account, "id", None), str(exc))
             except Exception as exc:
                 failed += 1
                 try:
@@ -338,10 +341,10 @@ def run_drive_account_probe() -> None:
                     account.last_error = str(exc)
                 except Exception:
                     pass
-                logging.warning("驱动账号自动探测失败 account_id=%s err=%s", getattr(account, "id", None), str(exc))
+                logger.warning("驱动账号自动探测失败 account_id=%s err=%s", getattr(account, "id", None), str(exc))
                 continue
         db.commit()
-        logging.info("驱动账号自动探测完成 ok=%s skipped=%s failed=%s", ok, skipped, failed)
+        logger.info("驱动账号自动探测完成 ok=%s skipped=%s failed=%s", ok, skipped, failed)
 
 
 task_scheduler_manager = TaskSchedulerManager()

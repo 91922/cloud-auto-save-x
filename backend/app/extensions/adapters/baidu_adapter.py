@@ -19,6 +19,9 @@ import requests
 from app.extensions.adapters.base_adapter import BaseCloudDriveAdapter
 
 
+logger = logging.getLogger(__name__)
+
+
 # ==================== 常量定义 ====================
 PCS_BAIDU_COM = "https://pcs.baidu.com"
 PAN_BAIDU_COM = "https://pan.baidu.com"
@@ -123,8 +126,15 @@ class BaiduAdapter(BaseCloudDriveAdapter):
         31299: "文件夹创建失败",
     }
 
-    def __init__(self, cookie: str = "", index: int = 0, config: dict | None = None, account_name: str = ""):
-        super().__init__(cookie, index, config=config)
+    def __init__(
+        self,
+        cookie: str = "",
+        index: int = 0,
+        config: dict | None = None,
+        account_name: str = "",
+        no_login: bool = False,
+    ):
+        super().__init__(cookie, index, config=config, no_login=no_login)
         self._cookies_dict: Dict[str, str] = {}
         self._session: Optional[requests.Session] = None
         self._bduss: str = ""
@@ -203,7 +213,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             )
             return resp
         except Exception as e:
-            logging.error(f"[Baidu] HTTP 请求失败: {e}")
+            logger.error(f"[Baidu] HTTP 请求失败: {e}")
             raise
 
     def _check_response(self, info: Dict) -> Dict:
@@ -211,7 +221,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
         errno = info.get("errno") or info.get("error_code") or 0
         if errno != 0:
             error_msg = info.get("errmsg") or info.get("error_msg") or self._get_error_message(errno)
-            logging.error(f"[Baidu] API 错误: errno={errno}, msg={error_msg}")
+            logger.error(f"[Baidu] API 错误: errno={errno}, msg={error_msg}")
         return info
 
     # ==================== 获取 bdstoken ====================
@@ -229,7 +239,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                 self._bdstoken = match.group(1)
                 return self._bdstoken
         except Exception as e:
-            logging.debug(f"[Baidu] 获取 bdstoken 失败: {e}")
+            logger.debug(f"[Baidu] 获取 bdstoken 失败: {e}")
 
         return ""
 
@@ -280,17 +290,17 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             )
             return resp.json()
         except Exception as e:
-            logging.error(f"[Baidu] 获取用户信息失败: {e}")
+            logger.error(f"[Baidu] 获取用户信息失败: {e}")
             return {}
 
     def init(self) -> Any:
         """初始化账户，验证 cookie 有效性"""
         if not self._session:
-            logging.error("[Baidu] Session 未初始化，请检查Cookie格式")
+            logger.error("[Baidu] Session 未初始化，请检查Cookie格式")
             return False
 
         if not self._bduss:
-            logging.error("[Baidu] Cookie 中缺少 BDUSS")
+            logger.error("[Baidu] Cookie 中缺少 BDUSS")
             return False
 
         try:
@@ -307,7 +317,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                     "nickname": self.nickname,
                 }
         except Exception as e:
-            logging.error(f"[Baidu] 初始化失败: {e}")
+            logger.error(f"[Baidu] 初始化失败: {e}")
 
         return False
 
@@ -407,7 +417,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
         resp = self._session.get(signin_url, params=signin_params, headers=headers, timeout=20)
         resp.raise_for_status()
         signin_data = _read_json(resp)
-        print(signin_data)
+        logger.debug("signin_data=%s", signin_data)
         raw["signin"] = signin_data
         errno = signin_data.get("errno") or signin_data.get("error_code") or 0
         if errno and int(errno) != 0:
@@ -481,7 +491,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             "dir": remotepath,
         }
         resp = self._request("POST", url, params=params)
-        logging.debug(f"[Baidu] _api_list url={url} params={params},resp={self._check_response(resp.json())}")
+        logger.debug(f"[Baidu] _api_list url={url} params={params},resp={self._check_response(resp.json())}")
         return self._check_response(resp.json())
 
     def _api_makedir(self, directory: str) -> Dict:
@@ -517,7 +527,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
         if fid.startswith("/"):
             return fid
         if not fid.isdigit():
-            logging.warning(f"[Baidu] fid={fid} 格式无法识别")
+            logger.warning(f"[Baidu] fid={fid} 格式无法识别")
             return "/"
         if not self._session:
             return "/"
@@ -533,13 +543,13 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                     info = self._api_list(current_dir)
                     items = info.get("list", [])
                 except Exception as e:
-                    logging.debug(f"[Baidu] 列出 {current_dir} 失败: {e}")
+                    logger.debug(f"[Baidu] 列出 {current_dir} 失败: {e}")
                     continue
 
                 for item in items:
                     if str(item.get("fs_id")) == fid:
                         path = item.get("path", "")
-                        logging.debug(f"[Baidu] fid={fid} 解析为路径: {path}")
+                        logger.debug(f"[Baidu] fid={fid} 解析为路径: {path}")
                         return path
                     if item.get("isdir") == 1:
                         next_dirs.append(item.get("path", ""))
@@ -548,7 +558,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                 break
             dirs_to_search = next_dirs
 
-        logging.warning(f"[Baidu] 遍历目录树后仍未找到 fid={fid} 对应的路径")
+        logger.warning(f"[Baidu] 遍历目录树后仍未找到 fid={fid} 对应的路径")
         return "/"
 
     # ==================== 分享链接操作 ====================
@@ -604,14 +614,14 @@ class BaiduAdapter(BaseCloudDriveAdapter):
         # 解析 yunData.setData 或 locals.mset
         match = re.search(r"(?:yunData\.setData|locals\.mset)\((.+?)\);", html)
         if not match:
-            logging.error("[Baidu] 无法解析分享页面数据")
+            logger.error("[Baidu] 无法解析分享页面数据")
             return {}
 
         try:
             shared_data = json.loads(match.group(1))
             return shared_data
         except json.JSONDecodeError as e:
-            logging.error(f"[Baidu] 解析分享数据 JSON 失败: {e}")
+            logger.error(f"[Baidu] 解析分享数据 JSON 失败: {e}")
             return {}
 
     def _api_list_shared_paths(
@@ -735,7 +745,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                     info = self._api_list_shared_paths(current_path, uk, share_id)
                     items = info.get("list", [])
                 except Exception as e:
-                    logging.debug(f"[Baidu] 列出分享目录 {current_path} 失败: {e}")
+                    logger.debug(f"[Baidu] 列出分享目录 {current_path} 失败: {e}")
                     continue
 
                 for item in items:
@@ -754,7 +764,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                 break
             queue = next_queue
 
-        logging.warning(
+        logger.warning(
             f"[Baidu] 分享目录树中未找到 fid={target_fid}，深度限制={max_depth}"
         )
         return "", []
@@ -768,7 +778,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
         if fid.startswith("/"):
             return fid
         if not fid.isdigit():
-            logging.warning(f"[Baidu] share fid={fid} 格式无法识别")
+            logger.warning(f"[Baidu] share fid={fid} 格式无法识别")
             return "/"
         if not self._session:
             return "/"
@@ -797,7 +807,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             )
             return path_str if path_str else "/"
         except Exception as e:
-            logging.error(f"[Baidu] _resolve_share_fid_to_path 失败: {e}")
+            logger.error(f"[Baidu] _resolve_share_fid_to_path 失败: {e}")
             return "/"
 
     def _resolve_share_path(
@@ -837,7 +847,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             )
             return breadcrumb
         except Exception as e:
-            logging.error(f"[Baidu] _resolve_share_path 失败: {e}")
+            logger.error(f"[Baidu] _resolve_share_path 失败: {e}")
             return []
 
     # ==================== 公共接口实现 ====================
@@ -860,7 +870,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             }
         except Exception as e:
             error_msg = str(e)
-            logging.error(f"[Baidu] 访问分享失败: {error_msg}")
+            logger.error(f"[Baidu] 访问分享失败: {error_msg}")
             errno_match = re.search(r"errno[=:]?\s*(-?\d+)", error_msg)
             if errno_match:
                 errno = int(errno_match.group(1))
@@ -945,7 +955,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                 if fetch_share_full_path:
                     full_path = breadcrumb
             else:
-                logging.warning(f"[Baidu] pdir_fid={pdir_fid} 格式无法识别，使用根目录")
+                logger.warning(f"[Baidu] pdir_fid={pdir_fid} 格式无法识别，使用根目录")
                 first_item = file_list[0]
                 remote_path = self._get_item_path(first_item)
 
@@ -977,7 +987,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             }
 
         except Exception as e:
-            logging.error(f"[Baidu] 获取分享详情失败: {e}")
+            logger.error(f"[Baidu] 获取分享详情失败: {e}")
             return {"code": 1, "message": f"获取分享详情失败: {e}", "data": {"list": []}}
 
     def _convert_shared_item(self, item: Dict) -> Dict:
@@ -1041,7 +1051,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             }
 
         except Exception as e:
-            logging.error(f"[Baidu] 列出目录失败: {e}")
+            logger.error(f"[Baidu] 列出目录失败: {e}")
             return {"code": 1, "message": f"列出目录失败: {e}", "data": {"list": []}}
 
     def save_file(
@@ -1108,7 +1118,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                         if fid and fid not in before_items:
                             name_to_new_fid[fname] = fid
             except Exception as e:
-                logging.error(f"[Baidu] 转存后获取目录失败: {e}")
+                logger.error(f"[Baidu] 转存后获取目录失败: {e}")
 
             # --- 按 file_names 顺序组装 save_as_top_fids ---
             saved_fids = []
@@ -1129,7 +1139,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
                                 found = True
                                 break
                         if not found:
-                            logging.warning(f"[Baidu] 未找到文件 '{fname}' 的新 fid")
+                            logger.warning(f"[Baidu] 未找到文件 '{fname}' 的新 fid")
                             saved_fids.append("")  # 占位，保持索引对齐
             else:
                 # 兼容旧调用方式：直接返回新增文件的 fid 列表
@@ -1155,7 +1165,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
 
         except Exception as e:
             error_msg = str(e)
-            logging.error(f"[Baidu] 转存失败: {error_msg}")
+            logger.error(f"[Baidu] 转存失败: {error_msg}")
             errno_match = re.search(r"errno[=:]?\s*(-?\d+)", error_msg)
             if errno_match:
                 errno = int(errno_match.group(1))
@@ -1206,7 +1216,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
 
         except Exception as e:
             error_msg = str(e)
-            logging.error(f"[Baidu] 创建目录失败: {error_msg}")
+            logger.error(f"[Baidu] 创建目录失败: {error_msg}")
             if "31061" in error_msg or "already" in error_msg.lower():
                 dir_name = dir_path.rstrip("/").split("/")[-1]
                 return {
@@ -1239,7 +1249,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             return {"code": 0, "message": "success"}
 
         except Exception as e:
-            logging.error(f"[Baidu] 重命名失败: {e}")
+            logger.error(f"[Baidu] 重命名失败: {e}")
             return {"code": 1, "message": f"重命名失败: {e}"}
 
     def delete(self, filelist: List[str]) -> Dict:
@@ -1267,7 +1277,7 @@ class BaiduAdapter(BaseCloudDriveAdapter):
             return {"code": 0, "message": "success"}
 
         except Exception as e:
-            logging.error(f"[Baidu] 删除失败: {e}")
+            logger.error(f"[Baidu] 删除失败: {e}")
             return {"code": 1, "message": f"删除失败: {e}"}
 
     def get_fids(self, file_paths: List[str]) -> List[Dict]:

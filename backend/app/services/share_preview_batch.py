@@ -253,7 +253,7 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
     if not per_drive:
         return SharePreviewBatchOut(items=items), cache_changed
 
-    manager = DatabaseAccountManager(db)
+    manager = DatabaseAccountManager(db, no_login=True)
     invalid_changed = False
 
     def _safe_error(e: Exception) -> str:
@@ -297,7 +297,7 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
         adapter = manager.manager.get_adapter(name)
         if adapter is None:
             return None
-        if not bool(getattr(adapter, "is_active", False)):
+        if (not bool(getattr(adapter, "is_active", False))) and (not bool(getattr(adapter, "no_login", False))):
             try:
                 ok = adapter.init()
             except Exception:
@@ -329,7 +329,7 @@ def preview_share_batch(db: Session, payload: SharePreviewBatchIn) -> tuple[Shar
                 for account in candidates:
                     adapter = _get_ready_adapter(account)
                     if adapter is None:
-                        last_error = f"账号 {str(getattr(account, 'name', '') or '').strip()}: 登录失败"
+                        last_error = f"账号 {str(getattr(account, 'name', '') or '').strip()}: 不可用"
                         continue
                     try:
                         pwd_id, passcode, extracted_pdir_fid, _ = adapter.extract_url(url)

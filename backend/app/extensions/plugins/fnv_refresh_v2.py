@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import posixpath
 import random
 import time
@@ -7,6 +8,9 @@ from typing import Any
 from urllib.parse import urlencode
 
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class Fnv_refresh_v2:
@@ -50,7 +54,7 @@ class Fnv_refresh_v2:
             return
 
         if self.username and self.password:
-            print(
+            logger.info(
                 f"{self.plugin_name}: 当前使用 Python 兼容版，已恢复配置项与扫描入口；"
                 "自动换取 token 的闭源逻辑暂不可用，请先按文档抓取 secret 和 fnv_token。"
             )
@@ -69,11 +73,11 @@ class Fnv_refresh_v2:
 
         library_id = self._get_library_id(target_path)
         if not library_id:
-            print(f"{self.plugin_name}: 未找到与路径匹配的媒体库 {target_path}")
+            logger.warning("%s: 未找到与路径匹配的媒体库 %s", self.plugin_name, target_path)
             return task
 
         if self._scan_library(library_id, target_path):
-            print(f"{self.plugin_name}: 已触发飞牛影视刷新 {target_path}")
+            logger.info("%s: 已触发飞牛影视刷新 %s", self.plugin_name, target_path)
             if self.remove_useless_wait >= 0:
                 self._remove_useless()
         return task
@@ -112,7 +116,7 @@ class Fnv_refresh_v2:
         for body in ({"wait_time": wait_time}, {"wait": wait_time}, {"seconds": wait_time}):
             payload = self._request("POST", "/v/api/v1/task/removeUseless", data=body, quiet=True)
             if payload and payload.get("code") == 0:
-                print(f"{self.plugin_name}: 已清理缺失媒体等待任务")
+                logger.info("%s: 已清理缺失媒体等待任务", self.plugin_name)
                 return
 
     def _request(
@@ -140,14 +144,19 @@ class Fnv_refresh_v2:
             payload = response.json()
         except Exception as exc:
             if not quiet:
-                print(f"{self.plugin_name}: 请求失败 {rel_url} {exc}")
+                logger.warning("%s: 请求失败 %s %s", self.plugin_name, rel_url, exc)
             return None
 
         if not isinstance(payload, dict):
             return None
 
         if payload.get("code") not in (0, None) and not quiet:
-            print(f"{self.plugin_name}: 接口返回异常 {rel_url} {payload.get('msg') or payload.get('message') or payload.get('code')}")
+            logger.warning(
+                "%s: 接口返回异常 %s %s",
+                self.plugin_name,
+                rel_url,
+                payload.get("msg") or payload.get("message") or payload.get("code"),
+            )
         self.api_key = api_key or self.api_key
         self.app_name = app_name or self.app_name
         return payload

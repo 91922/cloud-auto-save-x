@@ -18,6 +18,9 @@ import requests
 from app.extensions.adapters.base_adapter import BaseCloudDriveAdapter
 
 
+logger = logging.getLogger(__name__)
+
+
 # ==================== 常量定义 ====================
 API_HOST = "https://api.aliyundrive.com"
 AUTH_HOST = "https://auth.aliyundrive.com"
@@ -68,7 +71,7 @@ def _config_saver_factory(config_path: str):
             from quark_auto_save import Config
             config = Config.read_json(config_path)
             if not config:
-                logging.warning("[Aliyun] 无法读取配置文件")
+                logger.warning("[Aliyun] 无法读取配置文件")
                 return False
             
             # 更新 accounts 中对应账户的 cookie (refresh_token)
@@ -84,19 +87,19 @@ def _config_saver_factory(config_path: str):
                     # 记录 token 更新时间戳，用于防止回滚
                     acc["_token_updated_at"] = current_time
                     updated = True
-                    logging.info(f"[Aliyun] 已更新账户 {acc.get('name', 'unknown')} 的 refresh_token (时间戳: {current_time})")
+                    logger.info(f"[Aliyun] 已更新账户 {acc.get('name', 'unknown')} 的 refresh_token (时间戳: {current_time})")
                     if account_name:
                         break
             
             if updated:
                 Config.write_json(config_path, config)
-                logging.info("[Aliyun] refresh_token 已保存到配置文件")
+                logger.info("[Aliyun] refresh_token 已保存到配置文件")
                 return True
             else:
-                logging.warning("[Aliyun] 未找到需要更新的阿里云盘账户")
+                logger.warning("[Aliyun] 未找到需要更新的阿里云盘账户")
                 return False
         except Exception as e:
-            logging.error(f"[Aliyun] 保存 refresh_token 失败: {e}")
+            logger.error(f"[Aliyun] 保存 refresh_token 失败: {e}")
             return False
     
     return save_config
@@ -194,7 +197,14 @@ class AliyunAdapter(BaseCloudDriveAdapter):
         "UserDeviceOffline": "设备已离线",
     }
 
-    def __init__(self, cookie: str = "", index: int = 0, config: dict | None = None, account_name: str = None):
+    def __init__(
+        self,
+        cookie: str = "",
+        index: int = 0,
+        config: dict | None = None,
+        account_name: str | None = None,
+        no_login: bool = False,
+    ):
         """
         初始化阿里云盘适配器
         
@@ -203,18 +213,16 @@ class AliyunAdapter(BaseCloudDriveAdapter):
             index: 账户索引
             account_name: 账户名称（用于 token 更新时定位账户）
         """
-        super().__init__(cookie, index, config=config)
+        super().__init__(cookie, index, config=config, no_login=no_login)
         self._session: requests.Session = requests.Session()
         self._session.headers.update(UNI_HEADERS)
+        self._rate_limit_min_interval = 0.25
+        self._rate_limit_max_interval = 0.45
         
         self._refresh_token: str = str(self.config.get("refresh_token") or self.cookie or "").strip()
         self._token: Optional[AliyunToken] = None
         self._account_name: str = account_name or ""
         self._token_lock = threading.Lock()
-        
-        # 初始化 token
-        if self._refresh_token:
-            self._init_token()
 
     def _get_error_message(self, code: str) -> str:
         """获取错误码对应的提示信息"""
@@ -225,13 +233,13 @@ class AliyunAdapter(BaseCloudDriveAdapter):
         try:
             self._do_refresh_token()
         except Exception as e:
-            logging.error(f"[Aliyun] 初始化 token 失败: {e}")
+            logger.error(f"[Aliyun] 初始化 token 失败: {e}")
 
     def _do_refresh_token(self) -> bool:
         """刷新 access_token"""
         with self._token_lock:
             if not self._refresh_token:
-                logging.error("[Aliyun] 没有 refresh_token，无法刷新")
+                logger.error("[Aliyun] 没有 refresh_token，无法刷新")
                 return False
             
             try:
@@ -248,7 +256,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                 if "access_token" not in result:
                     code = result.get("code", "Unknown")
                     message = result.get("message", "")
-                    logging.error(f"[Aliyun] 刷新 token 失败: {code} - {message}")
+                    logger.error(f"[Aliyun] 刷新 token 失败: {code} - {message}")
                     return False
                 
                 # 更新 token
@@ -263,11 +271,11 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                 if old_refresh_token != self._refresh_token:
                     self._save_refresh_token()
                 
-                logging.info(f"[Aliyun] Token 刷新成功，用户: {self._token.nick_name}")
+                logger.info(f"[Aliyun] Token 刷新成功，用户: {self._token.nick_name}")
                 return True
                 
             except Exception as e:
-                logging.error(f"[Aliyun] 刷新 token 异常: {e}")
+                logger.error(f"[Aliyun] 刷新 token 异常: {e}")
                 return False
 
     def _save_refresh_token(self):
@@ -278,6 +286,8 @@ class AliyunAdapter(BaseCloudDriveAdapter):
 
     def _ensure_token_valid(self) -> bool:
         """确保 token 有效"""
+        if bool(getattr(self, "no_login", False)):
+            return False
         if not self._token or self._token.is_expired:
             return self._do_refresh_token()
         return True
@@ -296,8 +306,6 @@ class AliyunAdapter(BaseCloudDriveAdapter):
         if not ignore_auth:
             if not self._ensure_token_valid():
                 raise Exception("Token 无效")
-        self._throttle_request()
-        
         url = f"{host}{path}"
         req_headers = dict(self._session.headers)
         if headers:
@@ -305,16 +313,46 @@ class AliyunAdapter(BaseCloudDriveAdapter):
         
         if ignore_auth and "Authorization" in req_headers:
             del req_headers["Authorization"]
-        
-        try:
-            if method.upper() == "GET":
-                resp = self._session.get(url, headers=req_headers, params=body, timeout=30, **kwargs)
-            else:
-                resp = self._session.post(url, headers=req_headers, json=body, timeout=30, **kwargs)
+
+        last_resp: requests.Response | None = None
+        for attempt in range(4):
+            self._throttle_request()
+            try:
+                if method.upper() == "GET":
+                    resp = self._session.get(url, headers=req_headers, params=body, timeout=30, **kwargs)
+                else:
+                    resp = self._session.post(url, headers=req_headers, json=body, timeout=30, **kwargs)
+                last_resp = resp
+            except Exception as e:
+                last_resp = None
+                if attempt >= 3:
+                    logger.error(f"[Aliyun] HTTP 请求失败: {e}")
+                    raise
+                time.sleep(random.uniform(0.4, 0.9) * (2**attempt))
+                continue
+
+            if resp.status_code in (429, 503):
+                if attempt >= 3:
+                    return resp
+                time.sleep(random.uniform(0.6, 1.4) * (2**attempt))
+                continue
+
+            try:
+                data = resp.json()
+            except Exception:
+                return resp
+            code = str((data or {}).get("code") or "").strip()
+            if code in ("TooManyRequests", "BlockException", "ParamFlowException"):
+                if attempt >= 3:
+                    return resp
+                time.sleep(random.uniform(0.6, 1.4) * (2**attempt))
+                continue
+
             return resp
-        except Exception as e:
-            logging.error(f"[Aliyun] HTTP 请求失败: {e}")
-            raise
+
+        if last_resp is None:
+            raise Exception("Aliyun 请求失败")
+        return last_resp
 
     def _check_response(self, resp: requests.Response) -> Dict:
         """检查响应并返回数据"""
@@ -326,7 +364,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
         if resp.status_code not in [200, 201, 202]:
             code = data.get("code", "Unknown")
             message = data.get("message", self._get_error_message(code))
-            logging.error(f"[Aliyun] API 错误: {code} - {message}")
+            logger.error(f"[Aliyun] API 错误: {code} - {message}")
         
         return data
 
@@ -334,8 +372,10 @@ class AliyunAdapter(BaseCloudDriveAdapter):
     
     def init(self) -> Any:
         """初始化账户，验证 refresh_token 有效性"""
+        if bool(getattr(self, "no_login", False)):
+            return False
         if not self._refresh_token:
-            logging.error("[Aliyun] 未配置 refresh_token")
+            logger.error("[Aliyun] 未配置 refresh_token")
             return False
         
         if self._do_refresh_token():
@@ -454,7 +494,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                 "message": "success",
             }
         except Exception as e:
-            logging.error(f"[Aliyun] 获取分享令牌失败: {e}")
+            logger.error(f"[Aliyun] 获取分享令牌失败: {e}")
             return {"status": 500, "code": 1, "message": str(e)}
 
     def _get_share_info(self, share_id: str) -> Dict:
@@ -526,7 +566,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                 "metadata": {"_total": len(file_list)},
             }
         except Exception as e:
-            logging.error(f"[Aliyun] 获取分享详情失败: {e}")
+            logger.error(f"[Aliyun] 获取分享详情失败: {e}")
             return {"code": 1, "message": str(e), "data": {"list": []}}
 
     def _get_share_path(self, share_id: str, share_token: str, file_id: str) -> List[Dict]:
@@ -559,7 +599,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
             # 方法2: 如果上述方法失败，使用 BFS 遍历
             return self._bfs_share_path(share_id, share_token, file_id)
         except Exception as e:
-            logging.debug(f"[Aliyun] 获取分享路径失败: {e}")
+            logger.debug(f"[Aliyun] 获取分享路径失败: {e}")
             return []
 
     def _get_share_file_info(self, share_id: str, share_token: str, file_id: str) -> Optional[Dict]:
@@ -575,7 +615,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                 return data
             return None
         except Exception as e:
-            logging.debug(f"[Aliyun] 获取分享文件信息失败: {e}")
+            logger.debug(f"[Aliyun] 获取分享文件信息失败: {e}")
             return None
 
     def _bfs_share_path(self, share_id: str, share_token: str, target_file_id: str) -> List[Dict]:
@@ -622,7 +662,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                         new_path = current_path + [{"fid": item_id, "file_name": item_name}]
                         queue.append((item_id, new_path))
             except Exception as e:
-                logging.debug(f"[Aliyun] BFS 遍历分享目录失败: {e}")
+                logger.debug(f"[Aliyun] BFS 遍历分享目录失败: {e}")
                 continue
         
         return []
@@ -713,7 +753,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                 "metadata": {"_total": len(file_list)},
             }
         except Exception as e:
-            logging.error(f"[Aliyun] 列出目录失败: {e}")
+            logger.error(f"[Aliyun] 列出目录失败: {e}")
             return {"code": 1, "message": str(e), "data": {"list": []}}
 
     def _convert_item(self, item: Dict) -> Dict:
@@ -756,7 +796,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
             if not to_drive_id:
                 return {"code": 1, "message": "未获取到 drive_id，请检查账户配置", "data": {}}
             
-            logging.debug(f"[Aliyun] save_file: to_drive_id={to_drive_id}, to_parent_id={to_parent_id}")
+            logger.debug(f"[Aliyun] save_file: to_drive_id={to_drive_id}, to_parent_id={to_parent_id}")
             
             # 批量转存
             requests_list = []
@@ -808,7 +848,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                 },
             }
         except Exception as e:
-            logging.error(f"[Aliyun] 转存失败: {e}")
+            logger.error(f"[Aliyun] 转存失败: {e}")
             return {"code": 1, "message": str(e), "data": {}}
 
     def query_task(self, task_id: str) -> Dict:
@@ -882,7 +922,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                 "data": {"fid": created_id, "file_name": created_name},
             }
         except Exception as e:
-            logging.error(f"[Aliyun] 创建目录失败: {e}")
+            logger.error(f"[Aliyun] 创建目录失败: {e}")
             return {"code": 1, "message": str(e)}
 
     def _find_by_name(self, drive_id: str, parent_id: str, name: str, file_type: str = None) -> Optional[Dict]:
@@ -928,7 +968,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
             
             return {"code": 0, "message": "success"}
         except Exception as e:
-            logging.error(f"[Aliyun] 重命名失败: {e}")
+            logger.error(f"[Aliyun] 重命名失败: {e}")
             return {"code": 1, "message": str(e)}
 
     def delete(self, filelist: List[str]) -> Dict:
@@ -965,7 +1005,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
             
             return {"code": 0, "message": "success"}
         except Exception as e:
-            logging.error(f"[Aliyun] 删除失败: {e}")
+            logger.error(f"[Aliyun] 删除失败: {e}")
             return {"code": 1, "message": str(e)}
 
     def move_files(self, fids: List[str], to_pdir_fid: str) -> Dict:
@@ -1001,7 +1041,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                     })
             return path.reverse()
         except Exception as e:
-            logging.debug(f"[Aliyun] 获取文件路径失败: {e}")
+            logger.debug(f"[Aliyun] 获取文件路径失败: {e}")
             return []
 
     def get_fids(self, file_paths: List[str]) -> List[Dict]:
@@ -1108,7 +1148,7 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                 },
             }
         except Exception as e:
-            logging.error(f"[Aliyun] 生成二维码失败: {e}")
+            logger.error(f"[Aliyun] 生成二维码失败: {e}")
             return {"success": False, "message": str(e)}
 
     @staticmethod
@@ -1173,11 +1213,11 @@ class AliyunAdapter(BaseCloudDriveAdapter):
                         response["data"]["user_name"] = pds_login_result.get("userName", "")
                         response["data"]["nick_name"] = pds_login_result.get("nickName", "")
                     except Exception as e:
-                        logging.error(f"[Aliyun] 解析登录结果失败: {e}")
+                        logger.error(f"[Aliyun] 解析登录结果失败: {e}")
             
             return response
         except Exception as e:
-            logging.error(f"[Aliyun] 查询二维码状态失败: {e}")
+            logger.error(f"[Aliyun] 查询二维码状态失败: {e}")
             return {"success": False, "message": str(e)}
 
 

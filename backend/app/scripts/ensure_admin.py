@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 
 from sqlalchemy import select
 
+from app.core.logging import setup_logging
 from app.core.permission_seed import PERMISSIONS_SEED
 from app.core.security import hash_password
 from app.db.session import SessionLocal
@@ -12,6 +14,10 @@ from app.models.permission import Permission
 from app.models.role import Role
 from app.models.user import User
 from app.services.auth import ensure_password_policy
+
+
+logger = logging.getLogger(__name__)
+
 
 def _default(name: str, fallback: str) -> str:
     value = os.getenv(name, "").strip()
@@ -84,6 +90,7 @@ def ensure_admin(
 
 
 def main() -> None:
+    setup_logging()
     args = parse_args()
     created, password_reset = ensure_admin(
         username=args.username,
@@ -94,7 +101,7 @@ def main() -> None:
     )
     action = "已创建" if created else "已修复"
     reset_info = "，并重置密码" if password_reset else ""
-    print(f"{action}管理员账号: {args.username}{reset_info}")
+    logger.info("%s管理员账号: %s%s", action, args.username, reset_info)
 
 
 if __name__ == "__main__":

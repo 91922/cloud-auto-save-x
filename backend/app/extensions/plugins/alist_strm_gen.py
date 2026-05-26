@@ -11,7 +11,11 @@
 import os
 import re
 import json
+import logging
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class Alist_strm_gen:
@@ -41,7 +45,7 @@ class Alist_strm_gen:
                 if key in kwargs:
                     setattr(self, key, kwargs[key])
                 else:
-                    print(f"{self.plugin_name} 模块缺少必要参数: {key}")
+                    logger.warning("%s 模块缺少必要参数: %s", self.plugin_name, key)
             if self.url and self.token and self.storage_id:
                 success, result = self.storage_id_to_path(self.storage_id)
                 if success:
@@ -83,7 +87,7 @@ class Alist_strm_gen:
             storage_mount_path, quark_root_dir = match.group(1), match.group(2)
             file_list = self.get_file_list(storage_mount_path)
             if file_list.get("code") != 200:
-                print(f"Alist-Strm生成: 获取挂载路径失败❌ {file_list.get('message')}")
+                logger.warning("Alist-Strm生成: 获取挂载路径失败 %s", file_list.get("message"))
                 return False, (None, None)
         # 2. 检查是否数字，调用 Alist API 获取存储信息
         elif re.match(r"^\d+$", storage_id):
@@ -97,16 +101,14 @@ class Alist_strm_gen:
                         addition["cookie"], addition["root_folder_id"]
                     )
                 elif storage_info["driver"] == "QuarkTV":
-                    print(
-                        f"Alist-Strm生成: [QuarkTV]驱动⚠️ storage_id请手动填入 /Alist挂载路径:/Quark目录路径"
-                    )
+                    logger.warning("Alist-Strm生成: [QuarkTV]驱动 storage_id请手动填入 /Alist挂载路径:/Quark目录路径")
                 else:
-                    print(f"Alist-Strm生成: 不支持[{storage_info['driver']}]驱动 ❌")
+                    logger.warning("Alist-Strm生成: 不支持[%s]驱动", storage_info.get("driver"))
         else:
-            print(f"Alist-Strm生成: storage_id[{storage_id}]格式错误❌")
+            logger.warning("Alist-Strm生成: storage_id[%s]格式错误", storage_id)
         # 返回结果
         if storage_mount_path and quark_root_dir:
-            print(f"Alist-Strm生成: [{storage_mount_path}:{quark_root_dir}]")
+            logger.info("Alist-Strm生成: [%s:%s]", storage_mount_path, quark_root_dir)
             return True, (storage_mount_path, quark_root_dir)
         else:
             return False, (None, None)
@@ -122,15 +124,15 @@ class Alist_strm_gen:
             if data.get("code") == 200:
                 return data.get("data", [])
             else:
-                print(f"Alist-Strm生成: 获取存储失败❌ {data.get('message')}")
+                logger.warning("Alist-Strm生成: 获取存储失败 %s", data.get("message"))
         except Exception as e:
-            print(f"Alist-Strm生成: 获取存储出错 {e}")
+            logger.exception("Alist-Strm生成: 获取存储出错 %s", e)
         return []
 
     def check_dir(self, path):
         data = self.get_file_list(path)
         if data.get("code") != 200:
-            print(f"📺 Alist-Strm生成: 获取文件列表失败❌{data.get('message')}")
+            logger.warning("📺 Alist-Strm生成: 获取文件列表失败 %s", data.get("message"))
             return
         elif files := data.get("data", {}).get("content"):
             for item in files:
@@ -155,7 +157,7 @@ class Alist_strm_gen:
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            print(f"📺 Alist-Strm生成: 获取文件列表出错❌ {e}")
+            logger.exception("📺 Alist-Strm生成: 获取文件列表出错 %s", e)
         return {}
 
     def generate_strm(self, file_path, file_info):
@@ -175,7 +177,7 @@ class Alist_strm_gen:
             )
             with open(strm_path, "w", encoding="utf-8") as strm_file:
                 strm_file.write(f"{self.strm_server}{file_path}{sign_param}")
-            print(f"📺 生成STRM文件 {strm_path} 成功✅")
+            logger.info("📺 生成STRM文件 %s 成功", strm_path)
 
     def get_root_folder_full_path(self, cookie, pdir_fid):
         if pdir_fid == "0":
@@ -207,5 +209,5 @@ class Alist_strm_gen:
                     path = f"{path}/{item['file_name']}"
                 return path
         except Exception as e:
-            print(f"Alist-Strm生成: 获取Quark路径出错 {e}")
+            logger.exception("Alist-Strm生成: 获取Quark路径出错 %s", e)
         return ""

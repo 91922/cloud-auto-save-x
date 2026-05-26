@@ -15,6 +15,9 @@ from datetime import datetime
 from app.extensions.adapters.base_adapter import BaseCloudDriveAdapter
 
 
+logger = logging.getLogger(__name__)
+
+
 class Cloud115Adapter(BaseCloudDriveAdapter):
     """115网盘适配器"""
 
@@ -50,8 +53,15 @@ class Cloud115Adapter(BaseCloudDriveAdapter):
         "MacWechat/WMPF MacWechat/3.8.9(0x13080910) XWEB/1227"
     )
 
-    def __init__(self, cookie: str = "", index: int = 0, config: dict | None = None, account_name: str = ""):
-        super().__init__(cookie, index, config=config)
+    def __init__(
+        self,
+        cookie: str = "",
+        index: int = 0,
+        config: dict | None = None,
+        account_name: str = "",
+        no_login: bool = False,
+    ):
+        super().__init__(cookie, index, config=config, no_login=no_login)
 
         # ---- 带用户 cookie 的 session（用于操作自己的网盘）----
         self.auth_session = requests.Session()
@@ -99,7 +109,7 @@ class Cloud115Adapter(BaseCloudDriveAdapter):
                 timeout=15,
             )
         except Exception as e:
-            logging.warning(f"[115] 访问分享页面失败: {e}")
+            logger.warning(f"[115] 访问分享页面失败: {e}")
         return share_session
 
     def _safe_json(self, response) -> Dict:
@@ -108,7 +118,7 @@ class Cloud115Adapter(BaseCloudDriveAdapter):
             return response.json()
         except Exception as e:
             content = response.text[:200] if response.text else "(empty)"
-            logging.warning(f"[115] JSON解析失败: {e}, 响应: {content}")
+            logger.warning(f"[115] JSON解析失败: {e}, 响应: {content}")
             return {
                 "state": False,
                 "code": getattr(response, "status_code", 500),
@@ -144,7 +154,7 @@ class Cloud115Adapter(BaseCloudDriveAdapter):
                 return data.get("data", {})
             return False
         except Exception as e:
-            logging.error(f"[115] get_account_info error: {e}")
+            logger.error(f"[115] get_account_info error: {e}")
             return False
 
     def get_account_config(self) -> Dict[str, Any]:
@@ -348,7 +358,7 @@ class Cloud115Adapter(BaseCloudDriveAdapter):
                 break
             queue = next_queue
 
-        logging.warning(
+        logger.warning(
             f"[115] _resolve_share_path: 未找到 cid={target_cid}，"
             f"深度限制={max_depth}"
         )
@@ -415,7 +425,7 @@ class Cloud115Adapter(BaseCloudDriveAdapter):
                     "message": f"获取目录失败: {e}",
                     "data": {"list": []},
                 }
-        logging.debug(f"[115] ls_dir result: {len(list_merge)} items")
+        logger.debug(f"[115] ls_dir result: {len(list_merge)} items")
         return {
             "code": 0,
             "message": "success",
@@ -500,12 +510,12 @@ class Cloud115Adapter(BaseCloudDriveAdapter):
             "receive_code": receive_code,
             "file_id": ",".join(fid_token_list),
         }
-        logging.info(f"[115] receive: {url}, file_id={data['file_id']}")
+        logger.info(f"[115] receive: {url}, file_id={data['file_id']}")
         errors = []
         try:
             resp = self._request(save_session, "POST", url, data=data, timeout=30)
             result = self._safe_json(resp)
-            logging.info(f"[115] receive resp: {result}")
+            logger.info(f"[115] receive resp: {result}")
             if not result.get("state"):
                 errors.append(result.get("error", "转存失败"))
         except Exception as e:
@@ -527,7 +537,7 @@ class Cloud115Adapter(BaseCloudDriveAdapter):
                     if fid and fid not in before_items:
                         name_to_new_fid[fname] = fid
         except Exception as e:
-            logging.error(f"[115] 转存后获取目录失败: {e}")
+            logger.error(f"[115] 转存后获取目录失败: {e}")
 
         # --- 按 file_names 顺序组装 save_as_top_fids ---
         saved_fids = []
@@ -548,14 +558,14 @@ class Cloud115Adapter(BaseCloudDriveAdapter):
                             found = True
                             break
                     if not found:
-                        logging.warning(f"[115] 未找到文件 '{fname}' 的新 fid")
+                        logger.warning(f"[115] 未找到文件 '{fname}' 的新 fid")
                         saved_fids.append("")  # 占位，保持索引对齐
         else:
             # 兼容旧调用方式：直接返回新增文件的 fid 列表
             saved_fids = list(name_to_new_fid.values())
 
-        logging.info(f"[115] 转存完成，新文件映射: {name_to_new_fid}")
-        logging.info(f"[115] 按顺序返回 fids: {saved_fids}")
+        logger.info(f"[115] 转存完成，新文件映射: {name_to_new_fid}")
+        logger.info(f"[115] 按顺序返回 fids: {saved_fids}")
 
         return {
             "code": 0,

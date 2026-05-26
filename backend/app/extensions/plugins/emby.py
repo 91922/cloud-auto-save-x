@@ -1,4 +1,8 @@
+import logging
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class Emby:
@@ -20,7 +24,7 @@ class Emby:
                 if key in kwargs:
                     setattr(self, key, kwargs[key])
                 else:
-                    print(f"{self.plugin_name} 模块缺少必要参数: {key}")
+                    logger.warning("%s 模块缺少必要参数: %s", self.plugin_name, key)
             if self.url and self.token:
                 if self.get_info():
                     self.is_active = True
@@ -47,14 +51,12 @@ class Emby:
             response = requests.request("GET", url, headers=headers, params=querystring)
             if "application/json" in response.headers["Content-Type"]:
                 response = response.json()
-                print(
-                    f"Emby媒体库: {response.get('ServerName','')} v{response.get('Version','')}"
-                )
+                logger.info("Emby媒体库: %s v%s", response.get("ServerName", ""), response.get("Version", ""))
                 return True
             else:
-                print(f"Emby媒体库: 连接失败❌ {response.text}")
+                logger.warning("Emby媒体库: 连接失败 %s", response.text)
         except Exception as e:
-            print(f"获取Emby媒体库信息出错: {e}")
+            logger.exception("获取Emby媒体库信息出错: %s", e)
         return False
 
     def refresh(self, emby_id):
@@ -74,12 +76,12 @@ class Emby:
                 "POST", url, headers=headers, params=querystring
             )
             if response.text == "":
-                print(f"🎞️ 刷新Emby媒体库：成功✅")
+                logger.info("🎞️ 刷新Emby媒体库：成功")
                 return True
             else:
-                print(f"🎞️ 刷新Emby媒体库：{response.text}❌")
+                logger.warning("🎞️ 刷新Emby媒体库：%s", response.text)
         except Exception as e:
-            print(f"刷新Emby媒体库出错: {e}")
+            logger.exception("刷新Emby媒体库出错: %s", e)
         return False
 
     def search(self, media_name):
@@ -105,12 +107,10 @@ class Emby:
                 if response.get("Items"):
                     for item in response["Items"]:
                         if item["IsFolder"]:
-                            print(
-                                f"🎞️ 《{item['Name']}》匹配到Emby媒体库ID：{item['Id']}"
-                            )
+                            logger.info("🎞️ 《%s》匹配到Emby媒体库ID：%s", item.get("Name"), item.get("Id"))
                             return item["Id"]
             else:
-                print(f"🎞️ 搜索Emby媒体库：{response.text}❌")
+                logger.warning("🎞️ 搜索Emby媒体库：%s", response.text)
         except Exception as e:
-            print(f"搜索Emby媒体库出错: {e}")
+            logger.exception("搜索Emby媒体库出错: %s", e)
         return ""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import random
 import time
@@ -18,6 +19,9 @@ from app.services.invalid_share_links import list_invalid_shareurls
 from app.services.resource_search import fetch_task_suggestions
 from app.services.share_preview_batch import preview_share_batch
 from app.services.tmdb_cache import get_tmdb_detail_cached
+
+
+logger = logging.getLogger(__name__)
 
 
 def _debug_enabled() -> bool:
@@ -105,10 +109,10 @@ def repair_banned_drama_tasks(db: Session) -> dict:
         .all()
     )
     if debug:
-        print(f"[repair] scanned_rows={len(rows)}")
+        logger.debug(f"[repair] scanned_rows={len(rows)}")
     invalid_shareurls = list_invalid_shareurls(db, shareurls=[str(getattr(t, "shareurl", "") or "").strip() for t in rows])
     if debug:
-        print(f"[repair] invalid_shareurls_matched={len(invalid_shareurls)}")
+        logger.debug(f"[repair] invalid_shareurls_matched={len(invalid_shareurls)}")
     targets: list[Task] = []
     for task in rows:
         task_id = int(getattr(task, "id", 0) or 0)
@@ -118,29 +122,27 @@ def repair_banned_drama_tasks(db: Session) -> dict:
         is_invalid = bool(shareurl and shareurl in invalid_shareurls)
         if not ban and not is_invalid:
             if debug:
-                print(f"[repair] skip task_id={task_id} name={taskname} reason=no_ban_and_not_invalid")
+                logger.debug(f"[repair] skip task_id={task_id} name={taskname} reason=no_ban_and_not_invalid")
             continue
         tmdb_media_type = str(getattr(task, "tmdb_media_type", "") or "").strip().lower()
         tmdb_id = getattr(task, "tmdb_id", None)
         if tmdb_media_type != "tv":
             if debug:
-                print(
+                logger.debug(
                     f"[repair] skip task_id={task_id} name={taskname} reason=tmdb_media_type_not_tv tmdb_media_type={tmdb_media_type}"
                 )
             continue
         if tmdb_id is None:
             if debug:
-                print(f"[repair] skip task_id={task_id} name={taskname} reason=tmdb_id_missing")
+                logger.debug(f"[repair] skip task_id={task_id} name={taskname} reason=tmdb_id_missing")
             continue
         if debug:
-            print(
-                f"[repair] target task_id={task_id} name={taskname} ban={ban!s} is_invalid={is_invalid} shareurl={shareurl}"
-            )
+            logger.debug(f"[repair] target task_id={task_id} name={taskname} ban={ban!s} is_invalid={is_invalid} shareurl={shareurl}")
         targets.append(task)
 
     if not targets:
         if debug:
-            print("[repair] no_targets")
+            logger.debug("[repair] no_targets")
         return {"checked": 0, "repaired": 0, "items": []}
 
     repaired: list[dict] = []
@@ -154,10 +156,10 @@ def repair_banned_drama_tasks(db: Session) -> dict:
             drive_type = _pick_drive_type(db, task)
             if not drive_type:
                 if debug:
-                    print(f"[repair] skip task_id={task_id} name={taskname} reason=drive_type_unknown")
+                    logger.debug(f"[repair] skip task_id={task_id} name={taskname} reason=drive_type_unknown")
                 continue
             if debug:
-                print(f"[repair] task_id={task_id} name={taskname} drive_type={drive_type} old_shareurl={old_shareurl}")
+                logger.debug(f"[repair] task_id={task_id} name={taskname} drive_type={drive_type} old_shareurl={old_shareurl}")
 
             suggestions: list[dict] = []
             changed = False
@@ -165,7 +167,9 @@ def repair_banned_drama_tasks(db: Session) -> dict:
             for kw in _pick_search_keywords(db, task):
                 suggestions, changed, _msg = fetch_task_suggestions(db, keyword=kw, deep=1)
                 if debug:
-                    print(f"[repair] task_id={task_id} keyword={kw} suggestions_count={len(suggestions or [])} msg={str(_msg or '')}")
+                    logger.debug(
+                        f"[repair] task_id={task_id} keyword={kw} suggestions_count={len(suggestions or [])} msg={str(_msg or '')}"
+                    )
                 if suggestions:
                     break
             if changed:
@@ -178,12 +182,12 @@ def repair_banned_drama_tasks(db: Session) -> dict:
                     continue
                 if old_shareurl and url == old_shareurl:
                     if debug:
-                        print(f"[repair] task_id={task_id} skip_candidate reason=same_as_old url={url}")
+                        logger.debug(f"[repair] task_id={task_id} skip_candidate reason=same_as_old url={url}")
                     continue
                 dt = AdapterRegistry.detect_drive_type(url)
                 if dt != drive_type:
                     if debug:
-                        print(
+                        logger.debug(
                             f"[repair] task_id={task_id} skip_candidate reason=drive_type_mismatch url={url} dt={dt} expected={drive_type}"
                         )
                     continue
@@ -193,23 +197,23 @@ def repair_banned_drama_tasks(db: Session) -> dict:
                     break
             if not candidate_urls:
                 if debug:
-                    print(f"[repair] task_id={task_id} no_candidate_urls")
+                    logger.debug(f"[repair] task_id={task_id} no_candidate_urls")
                 continue
             if debug:
-                print(f"[repair] task_id={task_id} candidate_urls={candidate_urls}")
+                logger.debug(f"[repair] task_id={task_id} candidate_urls={candidate_urls}")
 
             batch_out, batch_changed = preview_share_batch(db, SharePreviewBatchIn(shareurls=candidate_urls, account_name=None))
             if batch_changed:
                 db_changed = True
             if debug:
                 ok_count = sum(1 for x in (batch_out.items or []) if bool(getattr(x, "ok", False)))
-                print(f"[repair] task_id={task_id} preview_items={len(batch_out.items or [])} ok={ok_count}")
+                logger.debug(f"[repair] task_id={task_id} preview_items={len(batch_out.items or [])} ok={ok_count}")
                 for x in batch_out.items or []:
                     latest = getattr(x, "latest_video", None)
                     season = getattr(latest, "season", None) if latest is not None else None
                     episode = getattr(latest, "episode", None) if latest is not None else None
                     size = getattr(latest, "size", None) if latest is not None else None
-                    print(
+                    logger.debug(
                         f"[repair] preview ok={bool(getattr(x,'ok',False))} url={str(getattr(x,'shareurl','') or '')} "
                         f"msg={str(getattr(x,'message', '') or '')} resolved_pdir_fid={str(getattr(x,'resolved_pdir_fid','') or '')} "
                         f"latest=S{season}E{episode} size={size}"
@@ -235,13 +239,13 @@ def repair_banned_drama_tasks(db: Session) -> dict:
 
             if best is None or best_key is None:
                 if debug:
-                    print(f"[repair] task_id={task_id} no_best_match")
+                    logger.debug(f"[repair] task_id={task_id} no_best_match")
                 continue
 
             latest = best.latest_video
             new_shareurl = _rewrite_shareurl_with_fid(str(best.shareurl or ""), str(getattr(best, "resolved_pdir_fid", None) or ""))
             if debug:
-                print(f"[repair] task_id={task_id} picked best_key={best_key} new_shareurl={new_shareurl}")
+                logger.debug(f"[repair] task_id={task_id} picked best_key={best_key} new_shareurl={new_shareurl}")
             task.shareurl = new_shareurl
             task.shareurl_ban = None
             db.flush()
@@ -268,12 +272,12 @@ def repair_banned_drama_tasks(db: Session) -> dict:
         if db_changed:
             db.commit()
         if debug:
-            print(f"[repair] done checked={len(targets)} repaired=0 db_changed={db_changed}")
+            logger.debug(f"[repair] done checked={len(targets)} repaired=0 db_changed={db_changed}")
         return {"checked": len(targets), "repaired": 0, "items": []}
 
     db.commit()
     if debug:
-        print(f"[repair] done checked={len(targets)} repaired={len(repaired)}")
+        logger.debug(f"[repair] done checked={len(targets)} repaired={len(repaired)}")
     lines: list[str] = []
     for item in repaired:
         s = item.get("season")

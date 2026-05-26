@@ -1,4 +1,8 @@
+import logging
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class Smartstrm:
@@ -16,7 +20,7 @@ class Smartstrm:
                 if key in kwargs:
                     setattr(self, key, kwargs[key])
                 else:
-                    print(f"{self.plugin_name} 模块缺少必要参数: {key}")
+                    logger.warning("%s 模块缺少必要参数: %s", self.plugin_name, key)
             if self.webhook and self.strmtask:
                 if self.get_info():
                     self.is_active = True
@@ -31,12 +35,12 @@ class Smartstrm:
             )
             response = response.json()
             if response.get("success"):
-                print(f"SmartStrm 触发任务: 连接成功 {response.get('version','')}")
+                logger.info("SmartStrm 触发任务: 连接成功 %s", response.get("version", ""))
                 return response
-            print(f"SmartStrm 触发任务：连接失败 {response.get('message','')}")
+            logger.warning("SmartStrm 触发任务：连接失败 %s", response.get("message", ""))
             return None
         except Exception as e:
-            print(f"SmartStrm 触发任务：连接出错 {str(e)}")
+            logger.exception("SmartStrm 触发任务：连接出错 %s", str(e))
             return None
 
     def run(self, task, **kwargs):
@@ -66,10 +70,13 @@ class Smartstrm:
             )
             response = response.json()
             if response.get("success"):
-                print(
-                    f"SmartStrm 触发任务: [{response['task']['name']}] {response['task']['storage_path']} 成功✅"
+                task_data = response.get("task") or {}
+                logger.info(
+                    "SmartStrm 触发任务: [%s] %s 成功",
+                    (task_data or {}).get("name"),
+                    (task_data or {}).get("storage_path"),
                 )
             else:
-                print(f"SmartStrm 触发任务: {response['message']}")
+                logger.warning("SmartStrm 触发任务: %s", response.get("message"))
         except Exception as e:
-            print(f"SmartStrm 触发任务：出错 {str(e)}")
+            logger.exception("SmartStrm 触发任务：出错 %s", str(e))

@@ -5,12 +5,16 @@
 """
 import sys
 import os
+import logging
 from typing import Dict, List, Tuple, Optional, Any
 
 # 添加父目录到路径，以便导入 quark_auto_save
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.extensions.adapters.base_adapter import BaseCloudDriveAdapter
+
+
+logger = logging.getLogger(__name__)
 
 
 class QuarkAdapter(BaseCloudDriveAdapter):
@@ -37,8 +41,15 @@ class QuarkAdapter(BaseCloudDriveAdapter):
     BASE_URL_APP = "https://drive-m.quark.cn"
     USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/3.14.2 Chrome/112.0.5615.165 Electron/24.1.3.8 Safari/537.36 Channel/pckk_other_ch"
 
-    def __init__(self, cookie: str = "", index: int = 0, config: dict | None = None, account_name: str = ""):
-        super().__init__(cookie, index, config=config)
+    def __init__(
+        self,
+        cookie: str = "",
+        index: int = 0,
+        config: dict | None = None,
+        account_name: str = "",
+        no_login: bool = False,
+    ):
+        super().__init__(cookie, index, config=config, no_login=no_login)
         self.mparam = self._match_mparam_form_cookie(cookie)
 
     def _match_mparam_form_cookie(self, cookie: str) -> Dict:
@@ -116,7 +127,7 @@ class QuarkAdapter(BaseCloudDriveAdapter):
             response = requests.request(method, url, headers=headers, **kwargs)
             return response
         except Exception as e:
-            print(f"_send_request error:\n{e}")
+            logger.exception("_send_request error: %s", e)
             fake_response = requests.Response()
             fake_response.status_code = 500
             fake_response._content = (
@@ -333,23 +344,14 @@ class QuarkAdapter(BaseCloudDriveAdapter):
             }
             response = self._send_request("GET", url, params=querystring).json()
             if response["status"] != 200:
-                print(f"查询任务状态失败：{response}")
+                logger.warning("查询任务状态失败：%s", response)
                 return response
             if response["data"]["status"] == 2:
-                if retry_index > 0:
-                    print(f"任务[{response['data']['task_title']}]执行完成")
-                else:
-                    print(f"任务[{response['data']['task_title']}]执行完成")
+                logger.info("任务[%s]执行完成", response["data"].get("task_title"))
                 break
             else:
                 if retry_index == 0:
-                    print(
-                        f"正在等待[{response['data']['task_title']}]执行结果",
-                        end="",
-                        flush=True,
-                    )
-                else:
-                    print(".", end="", flush=True)
+                    logger.debug("正在等待[%s]执行结果", response["data"].get("task_title"))
                 retry_index += 1
                 time.sleep(0.500)
         return response
@@ -403,7 +405,7 @@ class QuarkAdapter(BaseCloudDriveAdapter):
                 fids += response["data"]
                 file_paths = file_paths[50:]
             else:
-                print(f"获取目录ID：失败, {response['message']}")
+                logger.warning("获取目录ID：失败, %s", response.get("message"))
                 break
             if len(file_paths) == 0:
                 break
@@ -494,7 +496,7 @@ class QuarkAdapter(BaseCloudDriveAdapter):
         response = self._send_request(
             "POST", url, json=payload, headers=headers, params=querystring
         ).json()
-        print("执行签到:", response)
+        logger.info("执行签到: %s", response)
         if response.get("data"):
             return True, response["data"]["sign_daily_reward"]
         else:

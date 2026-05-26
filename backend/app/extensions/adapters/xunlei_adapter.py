@@ -18,6 +18,9 @@ import requests
 from app.extensions.adapters.base_adapter import BaseCloudDriveAdapter
 
 
+logger = logging.getLogger(__name__)
+
+
 # ==================== 常量定义 ====================
 API_BASE = "https://api-pan.xunlei.com"
 AUTH_BASE = "https://xluser-ssl.xunlei.com"
@@ -74,7 +77,7 @@ def _config_saver_factory(config_path: str):
             from quark_auto_save import Config
             config = Config.read_json(config_path)
             if not config:
-                logging.warning("[Xunlei] 无法读取配置文件")
+                logger.warning("[Xunlei] 无法读取配置文件")
                 return False
 
             accounts = config.get("accounts", [])
@@ -87,19 +90,19 @@ def _config_saver_factory(config_path: str):
                     acc["cookie"] = new_refresh_token
                     acc["_token_updated_at"] = current_time
                     updated = True
-                    logging.debug(f"[Xunlei] 已更新账户 {acc.get('name', 'unknown')} 的 refresh_token (时间戳: {current_time})")
+                    logger.debug(f"[Xunlei] 已更新账户 {acc.get('name', 'unknown')} 的 refresh_token (时间戳: {current_time})")
                     if account_name:
                         break
 
             if updated:
                 Config.write_json(config_path, config)
-                logging.debug("[Xunlei] refresh_token 已保存到配置文件")
+                logger.debug("[Xunlei] refresh_token 已保存到配置文件")
                 return True
             else:
-                logging.warning("[Xunlei] 未找到需要更新的迅雷网盘账户")
+                logger.warning("[Xunlei] 未找到需要更新的迅雷网盘账户")
                 return False
         except Exception as e:
-            logging.error(f"[Xunlei] 保存 refresh_token 失败: {e}")
+            logger.error(f"[Xunlei] 保存 refresh_token 失败: {e}")
             return False
 
     return save_config
@@ -135,8 +138,15 @@ class XunleiAdapter(BaseCloudDriveAdapter):
         }
     ]
 
-    def __init__(self, cookie: str = "", index: int = 0, config: dict | None = None, account_name: str = ""):
-        super().__init__(cookie, index, config=config)
+    def __init__(
+        self,
+        cookie: str = "",
+        index: int = 0,
+        config: dict | None = None,
+        account_name: str = "",
+        no_login: bool = False,
+    ):
+        super().__init__(cookie, index, config=config, no_login=no_login)
         self._session: requests.Session = requests.Session()
         self._session.headers.update(XUNLEI_HEADERS)
 
@@ -170,7 +180,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
     def _refresh_access_token(self) -> bool:
         """刷新 access_token"""
         if not self._refresh_token:
-            logging.error("[Xunlei] 没有 refresh_token，无法刷新")
+            logger.error("[Xunlei] 没有 refresh_token，无法刷新")
             return False
 
         try:
@@ -191,7 +201,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
 
             if "access_token" not in result:
                 error = result.get("error_description", result.get("error", "未知错误"))
-                logging.error(f"[Xunlei] 刷新 access_token 失败: {error}")
+                logger.error(f"[Xunlei] 刷新 access_token 失败: {error}")
                 return False
 
             self._access_token = result["access_token"]
@@ -203,7 +213,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
                 old_token = self._refresh_token
                 self._refresh_token = new_refresh
                 self._save_refresh_token()
-                logging.debug("[Xunlei] refresh_token 已更新")
+                logger.debug("[Xunlei] refresh_token 已更新")
 
             # 提取用户信息
             self._user_id = str(result.get("user_id", ""))
@@ -213,11 +223,11 @@ class XunleiAdapter(BaseCloudDriveAdapter):
             self._session.headers["Authorization"] = f"Bearer {self._access_token}"
             self._session.headers["x-device-id"] = self._device_id
 
-            logging.debug(f"[Xunlei] access_token 刷新成功，用户: {self._user_name or self._user_id}")
+            logger.debug(f"[Xunlei] access_token 刷新成功，用户: {self._user_name or self._user_id}")
             return True
 
         except Exception as e:
-            logging.error(f"[Xunlei] 刷新 access_token 异常: {e}")
+            logger.error(f"[Xunlei] 刷新 access_token 异常: {e}")
             return False
 
     def _refresh_captcha_token(self) -> bool:
@@ -249,7 +259,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
 
             if "captcha_token" not in result:
                 error = result.get("error_description", result.get("error", "未知错误"))
-                logging.error(f"[Xunlei] 获取 captcha_token 失败: {error}")
+                logger.error(f"[Xunlei] 获取 captcha_token 失败: {error}")
                 return False
 
             self._captcha_token = result["captcha_token"]
@@ -258,11 +268,11 @@ class XunleiAdapter(BaseCloudDriveAdapter):
             # 更新 session headers
             self._session.headers["x-captcha-token"] = self._captcha_token
 
-            logging.debug("[Xunlei] captcha_token 获取成功")
+            logger.debug("[Xunlei] captcha_token 获取成功")
             return True
 
         except Exception as e:
-            logging.error(f"[Xunlei] 获取 captcha_token 异常: {e}")
+            logger.error(f"[Xunlei] 获取 captcha_token 异常: {e}")
             return False
 
     def _ensure_tokens_valid(self) -> bool:
@@ -314,7 +324,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
             return resp.json()
 
         except Exception as e:
-            logging.error(f"[Xunlei] HTTP 请求失败: {e}")
+            logger.error(f"[Xunlei] HTTP 请求失败: {e}")
             return {"error": "RequestError", "error_description": str(e)}
 
     def _get_error_message(self, result: Dict) -> str:
@@ -365,14 +375,14 @@ class XunleiAdapter(BaseCloudDriveAdapter):
     def init(self) -> Any:
         """初始化账户，验证 refresh_token 有效性"""
         if not self._refresh_token:
-            logging.error("[Xunlei] 未配置 refresh_token")
+            logger.error("[Xunlei] 未配置 refresh_token")
             return False
 
         if not self._refresh_access_token():
             return False
 
         if not self._refresh_captcha_token():
-            logging.warning("[Xunlei] captcha_token 获取失败，部分功能可能受限")
+            logger.warning("[Xunlei] captcha_token 获取失败，部分功能可能受限")
 
         self.is_active = True
         self.nickname = self._user_name or f"迅雷用户{self.index}"
@@ -535,7 +545,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
                 "message": "success",
             }
         except Exception as e:
-            logging.error(f"[Xunlei] 获取分享令牌失败: {e}")
+            logger.error(f"[Xunlei] 获取分享令牌失败: {e}")
             return {"status": 500, "code": 1, "message": str(e)}
 
     def get_detail(
@@ -589,7 +599,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
             }
 
         except Exception as e:
-            logging.error(f"[Xunlei] 获取分享详情失败: {e}")
+            logger.error(f"[Xunlei] 获取分享详情失败: {e}")
             return {"code": 1, "message": str(e), "data": {"list": []}}
 
     def ls_dir(self, pdir_fid: str, max_items: int = 0, **kwargs) -> Dict:
@@ -647,7 +657,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
             }
 
         except Exception as e:
-            logging.error(f"[Xunlei] 列出目录失败: {e}")
+            logger.error(f"[Xunlei] 列出目录失败: {e}")
             return {"code": 1, "message": str(e), "data": {"list": []}}
 
     def save_file(
@@ -703,7 +713,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
             }
 
         except Exception as e:
-            logging.error(f"[Xunlei] 转存失败: {e}")
+            logger.error(f"[Xunlei] 转存失败: {e}")
             return {"code": 1, "message": str(e), "data": {}}
 
     def query_task(self, task_id: str) -> Dict:
@@ -748,7 +758,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
                             pass
 
                     if retry_index > 0:
-                        logging.debug("")
+                        logger.debug("")
 
                     return {
                         "status": 200,
@@ -768,13 +778,13 @@ class XunleiAdapter(BaseCloudDriveAdapter):
 
                 # 任务进行中
                 if retry_index == 0:
-                    logging.debug(f"[Xunlei] 等待任务执行: {result.get('name', task_id)}")
+                    logger.debug(f"[Xunlei] 等待任务执行: {result.get('name', task_id)}")
 
                 retry_index += 1
                 time.sleep(0.5)
 
             except Exception as e:
-                logging.error(f"[Xunlei] 查询任务失败: {e}")
+                logger.error(f"[Xunlei] 查询任务失败: {e}")
                 return {"status": 500, "code": 1, "message": str(e), "data": {"status": 0}}
 
         return {
@@ -830,7 +840,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
                 "data": {"fid": created_id, "file_name": created_name},
             }
         except Exception as e:
-            logging.error(f"[Xunlei] 创建目录失败: {e}")
+            logger.error(f"[Xunlei] 创建目录失败: {e}")
             return {"code": 1, "message": str(e)}
 
     def _find_by_name(self, parent_id: str, name: str, kind: str = None) -> Optional[Dict]:
@@ -866,7 +876,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
 
             return {"code": 0, "message": "success"}
         except Exception as e:
-            logging.error(f"[Xunlei] 重命名失败: {e}")
+            logger.error(f"[Xunlei] 重命名失败: {e}")
             return {"code": 1, "message": str(e)}
 
     def delete(self, filelist: List[str]) -> Dict:
@@ -884,7 +894,7 @@ class XunleiAdapter(BaseCloudDriveAdapter):
 
             return {"code": 0, "message": "success"}
         except Exception as e:
-            logging.error(f"[Xunlei] 删除失败: {e}")
+            logger.error(f"[Xunlei] 删除失败: {e}")
             return {"code": 1, "message": str(e)}
 
     def get_fids(self, file_paths: List[str]) -> List[Dict]:

@@ -9,7 +9,7 @@ from app.models.drive_account import DriveAccount
 
 
 class DatabaseAccountManager:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, *, no_login: bool = False):
         self.db = db
         self.manager = AccountManager()
         self.accounts = db.execute(select(DriveAccount).order_by(DriveAccount.is_default.desc(), DriveAccount.id.asc())).scalars().all()
@@ -29,10 +29,10 @@ class DatabaseAccountManager:
                 for item in self.accounts
             ]
         }
-        self.manager.load_accounts(payload)
+        self.manager.load_accounts(payload, no_login=no_login)
 
-    def get_adapter_for_task(self, task: dict):
-        return self.manager.get_adapter_for_task(task)
+    def get_adapter_for_task(self, task: dict, *, allow_inactive: bool = False):
+        return self.manager.get_adapter_for_task(task, allow_inactive=allow_inactive)
 
     def get_default_adapter(self):
         return self.manager.get_default_adapter()

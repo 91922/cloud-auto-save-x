@@ -175,12 +175,12 @@ class MagicRename:
                 continue
             replace = replace.replace(key, "")
 
-        if compiled_pattern and replace:
+        if compiled_pattern is not None:
             return compiled_pattern.sub(replace, file_name)
         return replace
 
     def sub(self, pattern: str, replace: str, file_name: str) -> str:
-        if not replace:
+        if not pattern and replace == "":
             return file_name
         cache_key = (pattern or None, replace)
         if cache_key != self._last_prep_key:

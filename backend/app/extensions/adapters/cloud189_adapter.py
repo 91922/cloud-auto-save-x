@@ -133,8 +133,15 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
         "Chrome/122.0.0.0 Safari/537.36"
     )
 
-    def __init__(self, cookie: str = "", index: int = 0, config: dict | None = None, account_name: str = ""):
-        super().__init__(cookie, index, config=config)
+    def __init__(
+        self,
+        cookie: str = "",
+        index: int = 0,
+        config: dict | None = None,
+        account_name: str = "",
+        no_login: bool = False,
+    ):
+        super().__init__(cookie, index, config=config, no_login=no_login)
         self._cookie_kv = {str(k): v for k, v in self.config.items()}
         self._user_name = self._cookie_kv.get("username") or self._cookie_kv.get("mobile") or ""
         self._password = self._cookie_kv.get("password") or self._cookie_kv.get("passWord") or ""

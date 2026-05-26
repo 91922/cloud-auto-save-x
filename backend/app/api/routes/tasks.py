@@ -17,6 +17,7 @@ from app.core.permissions import TASK_READ, TASK_RUN, TASK_WRITE
 from app.core.settings import settings
 from app.db.session import get_db
 from app.db.session import SessionLocal
+from app.extensions.adapters.adapter_factory import AdapterFactory
 from app.extensions.runtime.adapter_registry import AdapterRegistry
 from app.extensions.runtime.account_manager import DatabaseAccountManager
 from app.extensions.runtime.execution_log import ExecutionLog
@@ -999,10 +1000,9 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
     account_name = payload.account_name or _pick_default_account_name(db, drive_type)
     if payload.account_name and _get_active_account(db, payload.account_name) is None:
         raise not_found('DRIVE_ACCOUNT_NOT_FOUND', '指定账号不存在或不可用')
-    manager = DatabaseAccountManager(db)
+    manager = DatabaseAccountManager(db, no_login=True)
     task_payload = {"shareurl": payload.shareurl, "account_name": account_name}
-    manager.init_for_tasks([task_payload])
-    adapter = manager.get_adapter_for_task(task_payload)
+    adapter = manager.get_adapter_for_task(task_payload, allow_inactive=True)
     if adapter is None:
         raise not_found('DRIVE_ACCOUNT_NOT_FOUND', '没有可用的驱动账号')
     pwd_id, passcode, extracted_pdir_fid, _ = adapter.extract_url(payload.shareurl)
@@ -1055,10 +1055,30 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
     dir_file_list: list[dict] = []
     dir_filename_list: list[str] = []
     if savepath:
+        dest_adapter = None
+        account_row = _get_active_account(db, account_name) if account_name else None
+        if account_row is not None:
+            cfg = AdapterRegistry.parse_config_json(account_row.drive_type, account_row.config_json, account_row.cookie)
+            cookie = AdapterRegistry.serialize_config(account_row.drive_type, cfg)
+            dest_adapter = AdapterFactory.create_adapter(
+                account_row.drive_type,
+                cookie,
+                0,
+                config=cfg,
+                account_name=account_row.name,
+                no_login=False,
+            )
+            if dest_adapter is not None:
+                try:
+                    ok = dest_adapter.init()
+                except Exception:
+                    ok = None
+                if not ok:
+                    dest_adapter = None
         normalized = re.sub(r"/+", "/", savepath)
         dest_fid = None
         try:
-            fid_list = adapter.get_fids([normalized]) or []
+            fid_list = (dest_adapter.get_fids([normalized]) if dest_adapter is not None else []) or []
             match = None
             for item in fid_list:
                 item_path = item.get("file_path") or item.get("path") or item.get("filePath")
@@ -1072,7 +1092,7 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
         except Exception:
             dest_fid = None
         if dest_fid:
-            listing = adapter.ls_dir(dest_fid, max_items=2000) or {}
+            listing = (dest_adapter.ls_dir(dest_fid, max_items=2000) if dest_adapter is not None else {}) or {}
             dir_file_list = (((listing or {}).get("data") or {}).get("list")) or []
             for raw in dir_file_list:
                 if _bool_is_dir(raw):
@@ -1086,8 +1106,14 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
     mr = MagicRename(magic_regex=get_enabled_magic_regex_map(db))
     mr.set_taskname(taskname)
     pattern, replace = mr.magic_regex_conv(pattern, replace)
-    compiled_search = re.compile(pattern) if pattern else None
-    compiled_subdir = re.compile(update_subdir) if update_subdir else None
+    try:
+        compiled_search = re.compile(pattern) if pattern else None
+    except re.error as e:
+        raise bad_request("TASK_REGEX_INVALID", f"pattern 正则不合法: {e}")
+    try:
+        compiled_subdir = re.compile(update_subdir) if update_subdir else None
+    except re.error as e:
+        raise bad_request("TASK_REGEX_INVALID", f"update_subdir 正则不合法: {e}")
     video_exts = {
         ".mp4",
         ".mkv",

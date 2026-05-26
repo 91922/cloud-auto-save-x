@@ -6,6 +6,7 @@
 import re
 import hashlib
 import json
+import logging
 from typing import Any, Dict, List, Optional, Type
 
 from app.extensions.adapters.base_adapter import BaseCloudDriveAdapter
@@ -17,6 +18,9 @@ from app.extensions.adapters.aliyun_adapter import AliyunAdapter
 from app.extensions.adapters.uc_adapter import UCAdapter
 from app.extensions.adapters.pan123_adapter import Pan123Adapter
 from app.extensions.adapters.cloud189_adapter import Cloud189Adapter
+
+
+logger = logging.getLogger(__name__)
 
 
 class AdapterFactory:
@@ -50,11 +54,19 @@ class AdapterFactory:
     _instance_cache: Dict[str, BaseCloudDriveAdapter] = {}
 
     @classmethod
-    def _make_cache_key(cls, drive_type: str, config_payload: dict[str, Any], account_name: str = "") -> str:
+    def _make_cache_key(
+        cls,
+        drive_type: str,
+        config_payload: dict[str, Any],
+        account_name: str = "",
+        *,
+        no_login: bool = False,
+    ) -> str:
         """生成缓存键"""
         raw = json.dumps(config_payload, ensure_ascii=False, sort_keys=True)
         config_hash = hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
-        return f"{drive_type}:{account_name}:{config_hash}"
+        mode = "no_login" if bool(no_login) else "login"
+        return f"{drive_type}:{account_name}:{mode}:{config_hash}"
 
     @classmethod
     def register_adapter(cls, drive_type: str, adapter_class: Type[BaseCloudDriveAdapter]):
@@ -85,6 +97,7 @@ class AdapterFactory:
         *,
         config: dict[str, Any] | None = None,
         account_name: str = "",
+        no_login: bool = False,
     ) -> Optional[BaseCloudDriveAdapter]:
         """
         创建或获取缓存的适配器实例。
@@ -100,13 +113,13 @@ class AdapterFactory:
         """
         adapter_class = cls.ADAPTER_MAP.get(drive_type)
         if not adapter_class:
-            print(f"未知的网盘类型: {drive_type}")
+            logger.warning("未知的网盘类型: %s", drive_type)
             return None
 
         runtime_config = adapter_class.resolve_runtime_config(config=config, cookie=cookie)
 
         # 查找缓存
-        cache_key = cls._make_cache_key(drive_type, runtime_config, account_name)
+        cache_key = cls._make_cache_key(drive_type, runtime_config, account_name, no_login=no_login)
         cached = cls._instance_cache.get(cache_key)
         if cached is not None:
             setattr(cached, "account_name", account_name or "")
@@ -114,12 +127,18 @@ class AdapterFactory:
 
         # 创建新实例并缓存
         try:
-            adapter = adapter_class(cookie=cookie, index=index, config=runtime_config, account_name=account_name)
+            adapter = adapter_class(
+                cookie=cookie,
+                index=index,
+                config=runtime_config,
+                account_name=account_name,
+                no_login=no_login,
+            )
             setattr(adapter, "account_name", account_name or "")
             cls._instance_cache[cache_key] = adapter
             return adapter
         except Exception as e:
-            print(f"创建适配器失败: {e}")
+            logger.exception("创建适配器失败: %s", e)
             return None
 
     @classmethod
@@ -150,6 +169,7 @@ class AdapterFactory:
         *,
         config: dict[str, Any] | None = None,
         account_name: str = "",
+        no_login: bool = False,
     ) -> Optional[BaseCloudDriveAdapter]:
         """
         根据 URL 自动创建适配器
@@ -162,9 +182,9 @@ class AdapterFactory:
         """
         drive_type = cls.get_drive_type_by_url(url)
         if not drive_type:
-            print(f"无法识别的分享链接: {url}")
+            logger.warning("无法识别的分享链接: %s", url)
             return None
-        return cls.create_adapter(drive_type, cookie, index, config=config, account_name=account_name)
+        return cls.create_adapter(drive_type, cookie, index, config=config, account_name=account_name, no_login=no_login)
 
     @classmethod
     def get_supported_types(cls) -> List[str]:
@@ -179,7 +199,7 @@ class AccountManager:
         self.adapters: Dict[str, BaseCloudDriveAdapter] = {}
         self.default_adapter: Optional[BaseCloudDriveAdapter] = None
 
-    def load_accounts(self, config_data: Dict) -> bool:
+    def load_accounts(self, config_data: Dict, *, no_login: bool = False) -> bool:
         """
         从配置加载所有账户
         支持新格式（accounts）和旧格式（cookie）
@@ -208,6 +228,7 @@ class AccountManager:
                     i,
                     config=config,
                     account_name=name,
+                    no_login=no_login,
                 )
                 if adapter:
                     self.adapters[name] = adapter
@@ -227,7 +248,7 @@ class AccountManager:
                     continue
 
                 name = f"夸克账户{i+1}"
-                adapter = AdapterFactory.create_adapter("quark", cookie.strip(), i)
+                adapter = AdapterFactory.create_adapter("quark", cookie.strip(), i, no_login=no_login)
                 if adapter:
                     self.adapters[name] = adapter
                     if self.default_adapter is None:
@@ -243,7 +264,7 @@ class AccountManager:
         """获取默认适配器"""
         return self.default_adapter
 
-    def get_adapter_for_task(self, task: Dict) -> Optional[BaseCloudDriveAdapter]:
+    def get_adapter_for_task(self, task: Dict, *, allow_inactive: bool = False) -> Optional[BaseCloudDriveAdapter]:
         """
         为任务选择适配器
         优先使用任务指定的账户，否则根据 URL 自动选择
@@ -257,7 +278,7 @@ class AccountManager:
             adapter = self.adapters.get(account_name)
             if adapter:
                 return adapter
-            print(f"警告：指定的账户 '{account_name}' 不存在，尝试自动选择")
+            logger.warning("指定的账户 '%s' 不存在，尝试自动选择", account_name)
 
         # 2. 根据 URL 判断网盘类型
         shareurl = task.get("shareurl", "")
@@ -266,8 +287,11 @@ class AccountManager:
         if drive_type:
             # 查找该类型的第一个可用账户
             for adapter in self.adapters.values():
-                if adapter.DRIVE_TYPE == drive_type and adapter.is_active:
-                    return adapter
+                if adapter.DRIVE_TYPE != drive_type:
+                    continue
+                if (not allow_inactive) and (not adapter.is_active):
+                    continue
+                return adapter
 
         # 3. 使用默认适配器
         return self.default_adapter
@@ -338,7 +362,7 @@ class AccountManager:
         for name, adapter in adapters.items():
             if adapter.init():
                 success_count += 1
-                print(f"✅ 账户 '{name}' ({adapter.DRIVE_TYPE}) 登录成功: {adapter.nickname}")
+                logger.info("账户 '%s' (%s) 登录成功: %s", name, adapter.DRIVE_TYPE, adapter.nickname)
             else:
-                print(f"❌ 账户 '{name}' ({adapter.DRIVE_TYPE}) 登录失败")
+                logger.warning("账户 '%s' (%s) 登录失败", name, adapter.DRIVE_TYPE)
         return success_count

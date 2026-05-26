@@ -1,10 +1,14 @@
 import requests
 import json
 import hashlib
+import logging
 import random
 import time
 from urllib.parse import urlencode
 from typing import Any, Optional
+
+
+logger = logging.getLogger(__name__)
 
 
 # 飞牛影视插件
@@ -61,9 +65,9 @@ class Fnv:
                     self._login()
                 self.is_active = self.token is not None or self.token != ""
                 if self.is_active:
-                    print(f"{self.plugin_name}: 插件已激活 ✅")
+                    logger.info("%s: 插件已激活", self.plugin_name)
                 else:
-                    print(f"{self.plugin_name}: 插件未激活 ❌")
+                    logger.warning("%s: 插件未激活", self.plugin_name)
 
     def run(self, task, **kwargs):
         """
@@ -71,19 +75,19 @@ class Fnv:
         根据任务配置，执行媒体库刷新操作。
         """
         if not self.is_active:
-            print(f"飞牛影视: 插件未激活，跳过任务。")
+            logger.info("飞牛影视: 插件未激活，跳过任务。")
             return
 
         task_config = task.get("addition", {}).get(
             self.plugin_name, self.default_task_config
         )
         if not task_config.get("auto_refresh"):
-            print("飞牛影视: 自动刷新未启用，跳过处理。")
+            logger.info("飞牛影视: 自动刷新未启用，跳过处理。")
             return
 
         target_library_name = task_config.get("mdb_name")
         if not target_library_name:
-            print("飞牛影视: 未指定媒体库名称，跳过处理。")
+            logger.info("飞牛影视: 未指定媒体库名称，跳过处理。")
             return
         target_library_mdb_dir_list = task_config.get("mdb_dir_list")
         dir_list = []
@@ -108,7 +112,6 @@ class Fnv:
             if key not in self.OPTIONAL_KEYS and not getattr(self, key, None)
         ]
         if missing_keys:
-            # print(f"{self.plugin_name} 模块缺少必要参数: {', '.join(missing_keys)}")
             return False
         return True
 
@@ -124,7 +127,7 @@ class Fnv:
 
             authx = self._cse_sign(method, rel_url, params, data)
             if not authx:
-                print(f"飞牛影视: 为 {rel_url} 生成签名失败，请求中止。")
+                logger.error("飞牛影视: 为 %s 生成签名失败，请求中止。", rel_url)
                 return None
 
             headers = {
@@ -142,35 +145,35 @@ class Fnv:
                 response.raise_for_status()
                 response_data = response.json()
             except requests.exceptions.RequestException as e:
-                print(f"飞牛影视: 请求 {url} 时出错: {e}")
+                logger.warning("飞牛影视: 请求 %s 时出错: %s", url, e)
                 return None
             except json.JSONDecodeError:
-                print(f"飞牛影视: 解析来自 {url} 的响应失败，内容非JSON格式。")
+                logger.warning("飞牛影视: 解析来自 %s 的响应失败，内容非JSON格式。", url)
                 return None
 
             response_code = response_data.get("code")
             if response_code is None:
-                print(f"飞牛影视: 响应格式错误，未找到 'code' 字段。")
+                logger.warning("飞牛影视: 响应格式错误，未找到 'code' 字段。")
                 return None
 
             if response_code == 0:
                 return response_data
 
             if response_code == -2:
-                print(f"飞牛影视: 认证失败 (尝试 {attempt + 1}/{max_retries})，尝试重新登录...")
+                logger.warning("飞牛影视: 认证失败 (尝试 %s/%s)，尝试重新登录...", attempt + 1, max_retries)
                 if rel_url == self.API_LOGIN:
-                    print("飞牛影视: 登录接口认证失败，请检查用户名和密码。")
+                    logger.error("飞牛影视: 登录接口认证失败，请检查用户名和密码。")
                     return response_data
                 if not self._login():
-                    print("飞牛影视: 重新登录失败，无法继续请求。")
+                    logger.error("飞牛影视: 重新登录失败，无法继续请求。")
                     return None
                 continue
             else:
                 msg = response_data.get('msg', '未知错误')
-                print(f"飞牛影视: API调用失败 ({rel_url}): {msg}")
+                logger.error("飞牛影视: API调用失败 (%s): %s", rel_url, msg)
                 return response_data
 
-        print(f"飞牛影视: 请求 {rel_url} 在尝试 {max_retries} 次后仍然失败。")
+        logger.error("飞牛影视: 请求 %s 在尝试 %s 次后仍然失败。", rel_url, max_retries)
         return None
 
     def _login(self) -> bool:
@@ -180,17 +183,17 @@ class Fnv:
         app_name = self.app_name or self.default_config["app_name"]
         username = self.username or self.default_config["username"]
         password = self.password or self.default_config["password"]
-        print("飞牛影视: 正在尝试登录...")
+        logger.info("飞牛影视: 正在尝试登录...")
 
         payload = {"username": username, "password": password, "app_name": app_name}
         response_json = self._make_request('post', self.API_LOGIN, data=payload)
 
         if response_json and response_json.get("data", {}).get("token"):
             self.token = response_json["data"]["token"]
-            print("飞牛影视: 登录成功 ✅")
+            logger.info("飞牛影视: 登录成功")
             return True
         else:
-            print("飞牛影视: 登录失败 ❌")
+            logger.warning("飞牛影视: 登录失败")
             return False
 
     def _get_library_id(self, library_name: str) -> Optional[str]:
@@ -198,18 +201,18 @@ class Fnv:
         根据媒体库的名称获取其唯一ID (guid)。
         """
         if not self.token:
-            print("飞牛影视: 必须先登录才能获取媒体库列表。")
+            logger.warning("飞牛影视: 必须先登录才能获取媒体库列表。")
             return None
 
-        print(f"飞牛影视: 正在查找媒体库 '{library_name}'...")
+        logger.info("飞牛影视: 正在查找媒体库 '%s'...", library_name)
         response_json = self._make_request('get', self.API_MDB_LIST)
 
         if response_json and response_json.get("data"):
             for library in response_json.get("data", []):
                 if library.get("name") == library_name:
-                    print(f"飞牛影视: 找到目标媒体库 ✅，ID: {library.get('guid')}")
+                    logger.info("飞牛影视: 找到目标媒体库，ID: %s", library.get("guid"))
                     return library.get("guid")
-            print(f"飞牛影视: 未在媒体库列表中找到名为 '{library_name}' 的媒体库 ❌")
+            logger.warning("飞牛影视: 未在媒体库列表中找到名为 '%s' 的媒体库", library_name)
         return None
 
     def _refresh_library(self, library_id: str, dir_list: list[str] = None) -> bool:
@@ -217,13 +220,13 @@ class Fnv:
         根据给定的媒体库ID触发一次媒体库扫描/刷新。
         """
         if not self.token:
-            print("飞牛影视: 必须先登录才能刷新媒体库。")
+            logger.warning("飞牛影视: 必须先登录才能刷新媒体库。")
             return False
 
         if dir_list:
-            print(f"飞牛影视: 正在为媒体库 {library_id} 发送部分目录{dir_list}刷新指令...")
+            logger.info("飞牛影视: 正在为媒体库 %s 发送部分目录%s刷新指令...", library_id, dir_list)
         else:
-            print(f"飞牛影视: 正在为媒体库 {library_id} 发送刷新指令...")
+            logger.info("飞牛影视: 正在为媒体库 %s 发送刷新指令...", library_id)
         rel_url = self.API_MDB_SCAN.format(library_id)
         request_body = {"dir_list": dir_list} if dir_list else {}
         response_json = self._make_request('post', rel_url, data=request_body)
@@ -232,19 +235,19 @@ class Fnv:
 
         response_code = response_json.get("code")
         if response_code == 0:
-            print(f"飞牛影视: 发送刷新指令成功 ✅")
+            logger.info("飞牛影视: 发送刷新指令成功")
             return True
         elif response_code == -14:
             if self._stop_refresh_task(library_id):
-                print(f"飞牛影视: 发现重复任务，已停止旧任务，重新发送刷新指令...")
+                logger.info("飞牛影视: 发现重复任务，已停止旧任务，重新发送刷新指令...")
                 response_json = self._make_request('post', rel_url, data={})
                 if response_json and response_json.get("code") == 0:
-                    print(f"飞牛影视: 发送刷新指令成功 ✅")
+                    logger.info("飞牛影视: 发送刷新指令成功")
                     return True
                 else:
-                    print(f"飞牛影视: 重新发送刷新指令失败 ❌")
+                    logger.warning("飞牛影视: 重新发送刷新指令失败")
             else:
-                print(f"飞牛影视: 停止旧任务失败，无法继续刷新操作 ❌")
+                logger.warning("飞牛影视: 停止旧任务失败，无法继续刷新操作")
         return False
 
     def _stop_refresh_task(self, library_id: str) -> bool:
@@ -252,18 +255,18 @@ class Fnv:
         停止指定的媒体库刷新任务。
         """
         if not self.token:
-            print("飞牛影视: 必须先登录才能停止刷新任务。")
+            logger.warning("飞牛影视: 必须先登录才能停止刷新任务。")
             return False
 
-        print(f"飞牛影视: 正在停止媒体库刷新任务 {library_id}...")
+        logger.info("飞牛影视: 正在停止媒体库刷新任务 %s...", library_id)
         payload = {"guid": library_id, "type": "TaskItemScrap"}
         response_json = self._make_request('post', self.API_TASK_STOP, data=payload)
 
         if response_json and response_json.get("code") == 0:
-            print(f"飞牛影视: 停止刷新任务成功 ✅")
+            logger.info("飞牛影视: 停止刷新任务成功")
             return True
         else:
-            print(f"飞牛影视: 停止刷新任务失败 ❌")
+            logger.warning("飞牛影视: 停止刷新任务失败")
             return False
 
     def _cse_sign(self, method: str, path: str, params: dict = None, data: dict = None) -> str:

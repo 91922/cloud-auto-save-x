@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import smtplib
@@ -16,14 +17,9 @@ from email.utils import formataddr
 
 import requests
 
-_print = print
-mutex = threading.Lock()
 _send_lock = threading.Lock()
 
-
-def print(text, *args, **kw):
-    with mutex:
-        _print(text, *args, **kw)
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_PUSH_CONFIG = {
@@ -159,7 +155,7 @@ def bark(title: str, content: str) -> dict[str, object]:
 
 def console(title: str, content: str) -> dict[str, object]:
     if str(push_config.get("CONSOLE")).lower() != "false":
-        print(f"{title}\n\n{content}")
+        logger.info("%s\n\n%s", title, content)
         return _result("console", True, None)
     return _result("console", False, "disabled")
 

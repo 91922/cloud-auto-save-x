@@ -1,7 +1,10 @@
+import logging
 import os
 import re
 import time
-import traceback
+
+
+logger = logging.getLogger(__name__)
 
 
 class Auto_unarchive:
@@ -34,7 +37,10 @@ class Auto_unarchive:
 
         if not str(self.global_enable).lower() == "true":
             if not task_config.get("enable"):
-                print(f"🟨 [{task.get('taskname', '')}] 未启用 auto_unarchive（任务插件选项 enable=false，且 global_enable 未开启）")
+                logger.info(
+                    "🟨 [%s] 未启用 auto_unarchive（任务插件选项 enable=false，且 global_enable 未开启）",
+                    task.get("taskname", ""),
+                )
                 return task
 
         # 任务配置中是否自动删除原始文件
@@ -46,11 +52,11 @@ class Auto_unarchive:
             target_pdir_fid = account.savepath_fid.get(savepath)
 
             if not target_pdir_fid:
-                print(f"🟨 [{task.get('taskname', '')}] 未找到保存目录 fid，跳过云解压：{savepath}")
+                logger.warning("🟨 [%s] 未找到保存目录 fid，跳过云解压：%s", task.get("taskname", ""), savepath)
 
             drive_type = getattr(account, "DRIVE_TYPE", "") or ("quark" if account.__class__.__name__ == "Quark" else "")
             if drive_type and drive_type not in {"quark", "uc"}:
-                print(f"⚠️ [{task['taskname']}] {drive_type} 网盘未适配云解压，跳过插件执行")
+                logger.warning("⚠️ [%s] %s 网盘未适配云解压，跳过插件执行", task["taskname"], drive_type)
                 return task
 
             # 获取待解压节点列表
@@ -62,7 +68,7 @@ class Auto_unarchive:
                 and re.search(r"\.(zip|rar|7z)$", node.tag, re.I)
             ]
             if not all_zip_nodes:
-                print(f"🟨 [{task.get('taskname', '')}] 未发现压缩包（zip|rar|7z），跳过云解压")
+                logger.info("🟨 [%s] 未发现压缩包（zip|rar|7z），跳过云解压", task.get("taskname", ""))
                 return task
 
             wait_list = all_zip_nodes.copy()  # 等待提交队列
@@ -70,9 +76,7 @@ class Auto_unarchive:
             all_move_fids = []
             all_cleanup_fids = []
 
-            print(
-                f"📦 [{task['taskname']}] 共有 {len(wait_list)} 个任务，控制并发数为: {self.max_concurrent}"
-            )
+            logger.info("📦 [%s] 共有 %s 个任务，控制并发数为: %s", task["taskname"], len(wait_list), self.max_concurrent)
 
             while wait_list or active_tasks:
 
@@ -93,9 +97,9 @@ class Auto_unarchive:
                                 "zip_name": zip_name,
                             }
                         )
-                        print(f"  ▶️ 提交解压: {zip_name}")
+                        logger.info("  ▶️ 提交解压: %s", zip_name)
                     else:
-                        print(f"  ❌ 提交失败: {zip_name} ({res.get('message')})")
+                        logger.warning("  ❌ 提交失败: %s (%s)", zip_name, res.get("message"))
                         if "concurrent" in res.get("message", ""):
                             wait_list.insert(0, node)
                             break
@@ -105,7 +109,7 @@ class Auto_unarchive:
                     q_res = account.query_task(p_task["task_id"])
 
                     if q_res.get("code") == 0:
-                        print(f"  ✅ 解压完成: {p_task['zip_name']}")
+                        logger.info("  ✅ 解压完成: %s", p_task["zip_name"])
                         self._process_files(
                             account,
                             p_task,
@@ -118,21 +122,20 @@ class Auto_unarchive:
                     elif q_res.get("code") == 1:
                         pass
                     else:
-                        print(f"  ⚠️ 任务异常: {p_task['zip_name']} {q_res.get('message','')}")
+                        logger.warning("  ⚠️ 任务异常: %s %s", p_task["zip_name"], q_res.get("message", ""))
                         active_tasks.remove(p_task)
 
                 if active_tasks:
                     time.sleep(5)
 
             if all_move_fids:
-                print(f"🚀 任务全部解压完成，开始批量移动 {len(all_move_fids)} 个文件...")
+                logger.info("🚀 任务全部解压完成，开始批量移动 %s 个文件...", len(all_move_fids))
                 if account.move_files(all_move_fids, target_pdir_fid).get("code") == 0:
                     if all_cleanup_fids and account.delete(all_cleanup_fids):
-                        print(f"🧹 批量清理完成")
+                        logger.info("🧹 批量清理完成")
 
         except Exception as e:
-            print(f"❌ 运行异常: {e}")
-            traceback.print_exc()
+            logger.exception("❌ 运行异常: %s", e)
         return task
 
     def _process_files(self, account, p_task, q_res, target_fid, move_list, clean_list):
@@ -171,4 +174,4 @@ class Auto_unarchive:
             ext = os.path.splitext(item["file_name"])[1]
             new_name = f"{p_task['main_name']}{ext}"
             account.rename(item["fid"], new_name)
-            print(f"    └─ 重命名: {new_name}")
+            logger.info("    └─ 重命名: %s", new_name)

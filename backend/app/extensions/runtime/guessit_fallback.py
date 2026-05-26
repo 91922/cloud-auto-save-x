@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 
+
+logger = logging.getLogger(__name__)
 
 _RE_CJK = re.compile(r"[\u4e00-\u9fff]+")
 _RE_SPECIAL = re.compile(r"[\|\%\$]+")
@@ -103,7 +106,7 @@ def _trace(tag: str | None, message: str) -> None:
     prefix = "[guessit_fallback]"
     if tag:
         prefix = f"{prefix}[{tag}]"
-    print(f"{prefix} {message}", flush=True)
+    logger.debug("%s %s", prefix, message)
 
 
 def sanitize_for_guessit(name: str) -> str:
@@ -206,7 +209,13 @@ _RE_STRICT_KNOWN_EP_RULES = _compile_strict_known_ep_rules()
 
 
 def _pick_known_episode_strict_detail(base: str) -> tuple[int | None, str | None]:
-    s = str(base or "").strip()
+    origin = str(base or "").strip()
+    if not origin:
+        return None, None
+    s = origin
+    root, ext = os.path.splitext(origin)
+    if root and ext and ext.lower() in _VIDEO_EXTS:
+        s = root.strip()
     if not s:
         return None, None
     for rule in _RE_STRICT_KNOWN_EP_RULES:

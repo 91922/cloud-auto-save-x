@@ -140,8 +140,15 @@ class Pan123Adapter(BaseCloudDriveAdapter):
     ANDROID_X_APP_VERSION = "2.4.0"
     ANDROID_DEVICE_BRAND = "Xiaomi"
 
-    def __init__(self, cookie: str = "", index: int = 0, config: dict | None = None, account_name: str = ""):
-        super().__init__(cookie, index, config=config)
+    def __init__(
+        self,
+        cookie: str = "",
+        index: int = 0,
+        config: dict | None = None,
+        account_name: str = "",
+        no_login: bool = False,
+    ):
+        super().__init__(cookie, index, config=config, no_login=no_login)
         self._api_base = self.DEFAULT_BASE_URL
         self._share_base = self.DEFAULT_BASE_URL
         self._last_share_key = ""

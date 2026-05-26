@@ -3,7 +3,11 @@
 
 import re
 import json
+import logging
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class Alist_sync:
@@ -36,7 +40,7 @@ class Alist_sync:
                 if key in kwargs:
                     setattr(self, key, kwargs[key])
                 else:
-                    print(f"{self.__class__.__name__} 模块缺少必要参数: {key}")
+                    logger.warning("%s 模块缺少必要参数: %s", self.__class__.__name__, key)
             if self.url and self.token:
                 if self.verify_server():
                     self.is_active = True
@@ -48,11 +52,10 @@ class Alist_sync:
             del kwargs["headers"]
         try:
             response = requests.request(method, url, headers=headers, **kwargs)
-            # print(f"{response.text}")
             # response.raise_for_status()  # 检查请求是否成功，但返回非200也会抛出异常
             return response
         except Exception as e:
-            print(f"_send_request error:\n{e}")
+            logger.exception("_send_request error: %s", e)
             fake_response = requests.Response()
             fake_response.status_code = 500
             fake_response._content = b'{"status": 500, "message": "request error"}'
@@ -68,40 +71,31 @@ class Alist_sync:
             response = response.json()
             if response.get("code") == 200:
                 if response.get("data").get("username") == "guest":
-                    print(f"Alist登陆失败，请检查token")
+                    logger.warning("Alist登陆失败，请检查token")
                 else:
-                    print(
-                        f"Alist登陆成功，当前用户: {response.get('data').get('username')}"
-                    )
+                    logger.info("Alist登陆成功，当前用户: %s", response.get("data", {}).get("username"))
                     return True
             else:
-                print(f"Alist同步: 连接服务器失败❌ {response.get('message')}")
+                logger.warning("Alist同步: 连接服务器失败 %s", response.get("message"))
         except requests.exceptions.RequestException as e:
-            print(f"获取Alist信息出错: {e}")
+            logger.exception("获取Alist信息出错: %s", e)
         return False
 
     def run(self, task, **kwargs):
         if not task["addition"]["alist_sync"]["enable"]:
             return 0
-        print(f"开始进行alist同步")
+        logger.info("开始进行alist同步")
         # 这一块注释的是获取任务的参数，在web界面可以看
-        # print("所有任务参数：")
-        # print(task)
-        # print(task['addition'])
-        # print(task['addition']['alist_sync'])
-        # print(task['addition']['alist_sync']['target_path'])
 
         # 获取夸克挂载根目录
         data = self.get_storage_path(self.quark_storage_id)
         if data["driver"] != "Quark":
-            print(
-                f"Alist同步: 存储{self.quark_storage_id}非夸克存储❌ {data['driver']}"
-            )
+            logger.warning("Alist同步: 存储%s非夸克存储 %s", self.quark_storage_id, data["driver"])
             return 0
         quark_mount_root_path = re.sub(r".*root_folder_id\":\"", "", data["addition"])
         quark_mount_root_path = re.sub(r"\",.*", "", quark_mount_root_path)
         if quark_mount_root_path != "0" and quark_mount_root_path != "":
-            print(f"Alist同步: 存储{self.quark_storage_id}挂载的目录非夸克根目录❌")
+            logger.warning("Alist同步: 存储%s挂载的目录非夸克根目录", self.quark_storage_id)
             return 0
         self.quark_mount_path = data["mount_path"]
 
@@ -122,7 +116,6 @@ class Alist_sync:
                     self.save_path = self.save_path[:-1]
                 self.save_path = f"{self.save_mount_path}/{self.save_path}"
             else:
-                # print('完整路径模式')
                 if not self.save_path.startswith("/"):
                     self.save_path = "/" + self.save_path
                 if self.save_path.endswith("/"):
@@ -149,7 +142,6 @@ class Alist_sync:
                     self.verify_path = self.save_path[:-1]
                 self.verify_path = f"{self.save_mount_path}/{self.verify_path}"
             else:
-                # print('完整路径模式')
                 if not self.verify_path.startswith("/"):
                     self.verify_path = "/" + self.save_path
                 if self.verify_path.endswith("/"):
@@ -165,7 +157,7 @@ class Alist_sync:
         # 获取网盘已有文件
         source_dir_list = self.get_path_list(self.source_path)
         if not source_dir_list:
-            print("获取夸克文件列表失败，请检查网络或手动刷新alist中的夸克目录")
+            logger.warning("获取夸克文件列表失败，请检查网络或手动刷新alist中的夸克目录")
             return 0
         if self.tv_mode == 0 or self.tv_mode == "":
             self.tv_mode = False
@@ -184,11 +176,11 @@ class Alist_sync:
 
         if self.save_file_data:
             self.save_start(self.save_file_data)
-            print("同步的文件列表：")
+            logger.info("同步的文件列表：")
             for save_file in self.save_file_data:
-                print(f"└── 🎞️{save_file}")
+                logger.info("└── 🎞️%s", save_file)
         else:
-            print("没有需要同步的文件")
+            logger.info("没有需要同步的文件")
 
     def save_start(self, save_file_data):
         url = f"{self.url}/api/fs/copy"
@@ -201,9 +193,9 @@ class Alist_sync:
         )
         response = self._send_request("POST", url, data=payload)
         if response.status_code != 200:
-            print("未能进行Alist同步，请手动同步")
+            logger.warning("未能进行Alist同步，请手动同步")
         else:
-            print("Alist创建任务成功")
+            logger.info("Alist创建任务成功")
         self.copy_task = response.json()
 
     def get_save_file(self, target_dir_list, source_dir_list):
@@ -231,7 +223,6 @@ class Alist_sync:
                 )
                 for target_list in target_dir_list:
                     if source_list["is_dir"]:
-                        # print(f"跳过目录同步")
                         skip = True
                         break
                     if self.tv_mode:
@@ -243,12 +234,10 @@ class Alist_sync:
                             .lower()
                         )
                         if source_list_filename == target_list_filename:
-                            # print(f"文件存在，名称为：{target_list['name']}")
                             skip = True
                             break
                     else:
                         if source_list["name"] == target_list["name"]:
-                            # print(f"文件存在，名称为：{target_dir['name']}")
                             skip = True
                             break
                     if self.tv_mode:
@@ -268,9 +257,7 @@ class Alist_sync:
                                         source_list["name"].replace(".mp4", ".mkv")
                                         == all_file["name"]
                                     ):
-                                        print(
-                                            f"{source_list['name']}拥有相同版本的MKV文件，跳过复制"
-                                        )
+                                        logger.info("%s拥有相同版本的MKV文件，跳过复制", source_list["name"])
                                         skip = True
                 if not skip:
                     self.save_file_data.append(source_list["name"])
@@ -282,7 +269,7 @@ class Alist_sync:
         )
         response = self._send_request("POST", url, data=payload)
         if response.status_code != 200:
-            print(f"获取Alist目录出错: {response}")
+            logger.warning("获取Alist目录出错: %s", response)
             return False
         else:
             return response.json()["data"]["content"]
@@ -307,7 +294,7 @@ class Alist_sync:
             if data.get("code") == 200:
                 return data.get("data", [])
             else:
-                print(f"Alist同步: 存储{storage_id}连接失败❌ {data.get('message')}")
+                logger.warning("Alist同步: 存储%s连接失败 %s", storage_id, data.get("message"))
         except Exception as e:
-            print(f"Alist同步: 获取Alist存储出错 {e}")
+            logger.exception("Alist同步: 获取Alist存储出错 %s", e)
         return []

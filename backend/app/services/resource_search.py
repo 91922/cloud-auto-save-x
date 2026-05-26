@@ -24,7 +24,6 @@ from app.services.invalid_share_links import list_invalid_shareurls
 SOURCE_KEYS = ("net", "cloudsaver", "pansou")
 EXTERNAL_TIMEOUT = (15, 200)
 logger = logging.getLogger(__name__)
-_uvicorn_logger = logging.getLogger("uvicorn.error")
 
 SUPPORTED_CLOUD_TYPES = {
     "quark",
@@ -132,11 +131,9 @@ def _log_debug(label: str, payload: Any) -> None:
         text = repr(_redact(payload))
     msg = f"{label}={_truncate_text(text)}"
     if _debug_enabled():
-        print(msg)
-        _uvicorn_logger.info(msg)
+        logger.info(msg)
     else:
-        print(msg)
-        _uvicorn_logger.debug(msg)
+        logger.debug(msg)
 
 
 def _loads(value: str) -> dict[str, Any]:
