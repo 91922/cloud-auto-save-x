@@ -527,8 +527,53 @@ function upsertFileEvent(item: SyncFileEvent) {
     return
   }
   const prev = runFileStats.events[idx]
-  runFileStats.events.splice(idx, 1, { ...prev, ...item })
+  const next = { ...prev, ...item } as SyncFileEvent
+  if (item.size === undefined) next.size = prev.size
+  if (item.message === undefined) next.message = prev.message
+  runFileStats.events.splice(idx, 1, next)
 }
+
+function parsePercentMessage(value: any) {
+  const s = String(value || '').trim()
+  if (!s.endsWith('%')) return null
+  const raw = s.slice(0, -1).trim()
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return null
+  return Math.max(0, Math.min(100, n))
+}
+
+function fileEventRank(item: SyncFileEvent) {
+  const st = String(item?.status || '')
+  const pct = parsePercentMessage(item?.message)
+  if (st === 'syncing' && pct != null) return 0
+  if (st === 'syncing') return 1
+  if (st === 'failed') return 2
+  if (st === 'pending') return 3
+  if (st === 'success') return 4
+  if (st === 'skipped') return 5
+  return 9
+}
+
+const runFileEventsSorted = computed(() => {
+  const rows = runFileStats.events || []
+  const indexed = rows.map((it) => {
+    const key = String(it?.path || '')
+    const idx = runFileIndex.get(key)
+    return { it, idx: idx === undefined ? 1e12 : idx }
+  })
+  indexed.sort((a, b) => {
+    const ra = fileEventRank(a.it)
+    const rb = fileEventRank(b.it)
+    if (ra !== rb) return ra - rb
+    if (ra === 0) {
+      const pa = parsePercentMessage(a.it.message) ?? -1
+      const pb = parsePercentMessage(b.it.message) ?? -1
+      if (pa !== pb) return pb - pa
+    }
+    return a.idx - b.idx
+  })
+  return indexed.map((x) => x.it)
+})
 
 function applyStatsObject(stats: any) {
   if (!stats || typeof stats !== 'object') return
@@ -1270,7 +1315,7 @@ onMounted(loadData)
       <el-progress :percentage="toPercent(runFileStats.done_files, runFileStats.total_files)" :stroke-width="10" style="margin-bottom: 12px" />
 
       <div v-if="runFileView === 'list'">
-        <el-table :data="runFileStats.events" size="small" style="width: 100%" :height="runEventsTableHeight">
+        <el-table :data="runFileEventsSorted" size="small" style="width: 100%" :height="runEventsTableHeight">
           <el-table-column label="状态" width="90">
             <template #default="{ row }">
               <el-tag v-if="row.status === 'success'" type="success" size="small">OK</el-tag>
