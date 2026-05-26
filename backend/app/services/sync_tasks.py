@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 import posixpath
 from typing import Any
-
+from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -87,6 +87,8 @@ def create_sync_task(
         target_path=tp,
         mode=mode,
         strategy_json=json.dumps(strategy or {}, ensure_ascii=False),
+        created_at=datetime.now(),
+        updated_at=datetime.now()
     )
     db.add(task)
     db.flush()
@@ -117,6 +119,7 @@ def update_sync_task(db: Session, sync_task_id: int, **payload: Any) -> SyncTask
         task.strategy_json = json.dumps(payload["strategy"] or {}, ensure_ascii=False)
     if "drama_task_uids" in payload:
         _replace_drama_links(db, sync_task_uid=str(task.uid), drama_task_uids=payload.get("drama_task_uids"))
+    task.updated_at = datetime.now()
     db.flush()
     return task
 
