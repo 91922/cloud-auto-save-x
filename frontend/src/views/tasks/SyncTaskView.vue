@@ -838,6 +838,16 @@ onMounted(loadData)
 </script>
 
 <template>
+  <div class="section-header">
+      <div class="section-header__title">
+        <h2>同步任务</h2>
+      </div>
+      <div class="toolbar__right">
+        <el-text class="mx-1" type="primary">注：同步任务由追剧任务运行后自动触发或手动运行</el-text>
+        <el-button type="primary" :disabled="!canWrite" @click="openCreate">新建同步任务</el-button>
+      </div>
+  </div>
+  <br>
   <div style="display: flex; flex-direction: column; gap: 12px">
     <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: space-between">
       <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center">
@@ -849,7 +859,6 @@ onMounted(loadData)
         </el-select>
         <el-button :loading="loading" @click="loadData">刷新</el-button>
       </div>
-      <el-button type="primary" :disabled="!canWrite" @click="openCreate">新建同步任务</el-button>
     </div>
 
     <div v-if="isMobile" style="display: flex; flex-direction: column; gap: 10px">
@@ -995,7 +1004,7 @@ onMounted(loadData)
           <el-form-item label="模式">
             <el-radio-group v-model="drawer.mode">
               <el-radio-button label="one_way">单向</el-radio-button>
-              <el-radio-button label="two_way">双向</el-radio-button>
+              <el-radio-button label="two_way" disabled>双向</el-radio-button>
             </el-radio-group>
           </el-form-item>
 
