@@ -55,6 +55,7 @@ def setup_logging(*, force: bool = False) -> None:
             "uvicorn.error": {"level": level, "handlers": ["console"], "propagate": False},
             "uvicorn.access": {"level": level, "handlers": ["console"], "propagate": False},
             "app.access": {"level": level, "handlers": ["console"], "propagate": False},
+            "rebulk": {"level": "INFO", "handlers": ["console"], "propagate": False},
         },
     }
 
