@@ -118,11 +118,32 @@ def build_sync_execution_section(task: SyncTask, execution: SyncExecution, files
 
 def send_sync_execution_notification(db: Session, task: SyncTask, execution: SyncExecution) -> None:
     try:
-        if str(getattr(execution, "status", "") or "") != "success":
+        status = str(getattr(execution, "status", "") or "")
+        if status not in {"success", "failed"}:
             return
         execution_id = int(getattr(execution, "id", 0) or 0)
         if execution_id <= 0:
             return
+        name = str(getattr(task, "name", "") or "")
+        mode = str(getattr(task, "mode", "") or "one_way")
+        source = f"{getattr(task, 'source_type', '')}:{getattr(task, 'source_path', '')}"
+        target = f"{getattr(task, 'target_type', '')}:{getattr(task, 'target_path', '')}"
+
+        if status == "failed":
+            stage = str(getattr(execution, "stage", "") or "")
+            message = str(getattr(execution, "message", "") or "").strip()
+            parts = []
+            parts.append(f"❌同步《{name}》失败")
+            parts.append(f"模式: {mode}")
+            parts.append(f"源: {source}")
+            parts.append(f"目标: {target}")
+            if stage:
+                parts.append(f"阶段: {stage}")
+            if message:
+                parts.append(f"原因: {message}")
+            send_runtime(db, SYNC_NOTIFY_TITLE, "\n".join([p for p in parts if p]))
+            return
+
         rows = (
             db.execute(select(SyncExecutionFile).where(SyncExecutionFile.sync_execution_id == execution_id).order_by(SyncExecutionFile.id.asc()))
             .scalars()
@@ -133,4 +154,3 @@ def send_sync_execution_notification(db: Session, task: SyncTask, execution: Syn
             send_runtime(db, SYNC_NOTIFY_TITLE, content)
     except Exception:
         return
-

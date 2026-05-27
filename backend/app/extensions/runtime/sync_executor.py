@@ -319,6 +319,24 @@ class SyncExecutor:
             )
 
             log.line(f"动作数: {len(actions)}")
+            for a in actions:
+                try:
+                    if str(a.get("kind") or "") != "copy":
+                        continue
+                    src_ep = a.get("src")
+                    if not isinstance(src_ep, Endpoint):
+                        continue
+                    src_rel = _norm_rel(str(a.get("src_rel") or ""))
+                    meta = None
+                    if src_ep == source:
+                        meta = source_map.get(src_rel)
+                    elif src_ep == target:
+                        meta = target_map.get(src_rel)
+                    if meta is None or meta.is_dir:
+                        continue
+                    a["_size"] = int(meta.size)
+                except Exception:
+                    continue
             if logger.isEnabledFor(logging.DEBUG):
                 head = []
                 for a in actions[:10]:
@@ -579,6 +597,7 @@ class SyncExecutor:
             execution.message = message
             execution.heartbeat_at = datetime.now()
             self.db.commit()
+            send_sync_execution_notification(self.db, task, execution)
             raise
 
     def _load_strategy(self, task: SyncTask, *, override: dict[str, Any] | None) -> Strategy:
@@ -666,7 +685,15 @@ class SyncExecutor:
                     cancel_checker.raise_if_cancelled()
                 if interval > 0:
                     time.sleep(interval)
-                resp = client.fs_list(abs_dir, refresh=refresh, page=page, per_page=per_page)
+                try:
+                    resp = client.fs_list(abs_dir, refresh=refresh, page=page, per_page=per_page)
+                except Exception as exc:
+                    api_code = getattr(exc, "api_code", None)
+                    api_message = str(getattr(exc, "api_message", "") or "").strip()
+                    text = (api_message or str(exc) or "").lower()
+                    if str(api_code) in {"404", "500"} and ("object not found" in text or "failed get dir" in text):
+                        raise bad_request("SYNC_OPENLIST_DIR_NOT_FOUND", f"OpenList 目录不存在: {abs_dir}") from exc
+                    raise
                 data = resp.get("data") if isinstance(resp, dict) else None
                 content = []
                 if isinstance(data, dict):
@@ -1382,6 +1409,38 @@ class SyncExecutor:
                 path = display_path(dst, dst_rel)
                 size = a.get("_size")
                 try:
+                    on_chunk = None
+                    try:
+                        total = int(size) if size is not None else 0
+                    except Exception:
+                        total = 0
+                    if total > 0:
+                        bytes_done = 0
+                        last_emit_ts = 0.0
+                        last_pct: float | None = None
+
+                        def _on_chunk(n: int) -> None:
+                            nonlocal bytes_done, last_emit_ts, last_pct
+                            try:
+                                bytes_done += int(n or 0)
+                            except Exception:
+                                return
+                            if bytes_done < 0:
+                                bytes_done = 0
+                            now = _now_ts()
+                            pct = (float(bytes_done) * 100.0) / float(total) if total > 0 else 0.0
+                            if pct < 0:
+                                pct = 0.0
+                            if pct > 100.0:
+                                pct = 100.0
+                            if last_pct is not None:
+                                if (now - last_emit_ts) < 0.8 and abs(float(pct) - float(last_pct)) < 1.0:
+                                    return
+                            last_emit_ts = now
+                            last_pct = float(pct)
+                            push_event("copy", "syncing", path, size=total, message=f"{pct:.1f}%")
+
+                        on_chunk = _on_chunk
                     st = self._copy_between(
                         src,
                         dst,
@@ -1389,6 +1448,7 @@ class SyncExecutor:
                         dst_rel,
                         strategy=strategy,
                         dst_exists=bool(a.get("dst_exists")) if a.get("dst_exists") is not None else None,
+                        on_chunk=on_chunk,
                     )
                     return {"action": "copy", "status": st, "path": path, "size": size, "message": None}
                 except Exception as e:
@@ -1430,8 +1490,8 @@ class SyncExecutor:
                 dst: Endpoint = a["dst"]
                 src_rel = str(a.get("src_rel") or "")
                 dst_rel = str(a.get("dst_rel") or "")
-                size = None
-                if src.type == "local":
+                size = a.get("_size")
+                if size is None and src.type == "local":
                     try:
                         root = _local_sync_root()
                         base = _resolve_local_path(root, src.path)
