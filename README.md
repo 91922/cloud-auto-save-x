@@ -179,3 +179,11 @@ services:
 CDN acceleration and security protection for this project are sponsored by Tencent EdgeOne.
 
 <a href="https://edgeone.ai/?from=github" target="_blank"><img title="Best Asian CDN, Edge, and Secure Solutions - Tencent EdgeOne" src="https://edgeone.ai/media/34fe3a45-492d-4ea4-ae5d-ea1087ca7b4b.png" width="300"></a>
+
+## Star History
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=OzoO0/cloud-auto-save-x&type=Date&theme=dark" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=OzoO0/cloud-auto-save-x&type=Date" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=OzoO0/cloud-auto-save-x&type=Date" />
+</picture>

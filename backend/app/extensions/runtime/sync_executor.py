@@ -1282,25 +1282,54 @@ class SyncExecutor:
                     if isinstance(data, dict):
                         tasks = data.get("tasks") or []
                     if isinstance(tasks, list) and tasks:
-                        last_emit_ts = 0.0
-                        last_emit_val: float | None = None
+                        tid_to_path: dict[str, str] = {}
+                        done_paths: set[str] = set()
+                        name_to_paths: dict[str, list[str]] = {}
+                        for bp in batch_paths:
+                            name_to_paths.setdefault(posixpath.basename(bp), []).append(bp)
+                        for idx, t in enumerate(tasks):
+                            if not isinstance(t, dict):
+                                continue
+                            tid = str(t.get("id") or "").strip()
+                            if not tid:
+                                continue
+                            mapped = None
+                            if len(tasks) == len(batch_paths) and idx < len(batch_paths):
+                                mapped = batch_paths[idx]
+                            else:
+                                tname = str(t.get("name") or "").strip()
+                                cand = posixpath.basename(tname) if tname else ""
+                                options = name_to_paths.get(cand) if cand else None
+                                if options and len(options) == 1:
+                                    mapped = options[0]
+                            if mapped:
+                                tid_to_path[tid] = mapped
 
-                        def _emit_batch_progress(p: float | None) -> None:
-                            nonlocal last_emit_ts, last_emit_val
-                            if p is None:
+                        def _emit_terminal(tid: str, data: dict[str, Any]) -> None:
+                            path = tid_to_path.get(str(tid))
+                            if not path or path in done_paths:
                                 return
-                            now = _now_ts()
-                            if now - last_emit_ts < 2.0:
-                                return
-                            if last_emit_val is not None and abs(float(p) - float(last_emit_val)) < 0.5 and now - last_emit_ts < 6.0:
-                                return
-                            if len(batch_paths) > 50:
-                                return
-                            msg = f"{float(p):.1f}%"
-                            for bp in batch_paths:
-                                push_event("copy", "syncing", bp, message=msg)
-                            last_emit_ts = now
-                            last_emit_val = float(p)
+                            done_paths.add(path)
+                            state_raw: Any = data.get("state") if "state" in data else data.get("State")
+                            state = str(state_raw or "").strip().lower()
+                            status_raw: Any = data.get("status") if "status" in data else data.get("Status")
+                            status_text = str(status_raw or "").strip().lower()
+                            err_raw: Any = data.get("error") if "error" in data else data.get("Error")
+                            err = str(err_raw or "").strip()
+                            failed = False
+                            if err:
+                                failed = True
+                            if not failed and ("fail" in status_text or "error" in status_text):
+                                failed = True
+                            if not failed:
+                                try:
+                                    sv = int(state) if state.isdigit() else None
+                                except Exception:
+                                    sv = None
+                                if sv is not None and sv in {4, 5}:
+                                    failed = True
+                            push_event("copy", "failed" if failed else "success", path, message=(err if failed else None))
+                            flush_now()
 
                         self._wait_openlist_tasks(
                             client,
@@ -1308,10 +1337,13 @@ class SyncExecutor:
                             tasks,
                             log=log,
                             flush_now=flush_now,
-                            on_progress=_emit_batch_progress,
+                            on_item_progress=lambda tid, p: (push_event("copy", "syncing", tid_to_path.get(str(tid)) or "", message=f"{float(p):.1f}%") if tid_to_path.get(str(tid)) and (tid_to_path.get(str(tid)) not in done_paths) else None),
+                            on_terminal=_emit_terminal,
                             cancel_checker=cancel_checker,
                         )
                     for p in batch_paths:
+                        if p in done_paths:
+                            continue
                         push_event("copy", "success", p)
                 except Exception as e:
                     log.line(
@@ -1352,6 +1384,8 @@ class SyncExecutor:
         log: ExecutionLog,
         flush_now: Callable[[], None] | None = None,
         on_progress: Callable[[float | None], None] | None = None,
+        on_item_progress: Callable[[str, float], None] | None = None,
+        on_terminal: Callable[[str, dict[str, Any]], None] | None = None,
         cancel_checker: _CancelChecker | None,
     ) -> None:
         tids: list[str] = []
@@ -1368,6 +1402,9 @@ class SyncExecutor:
         fail_counts: dict[str, int] = {tid: 0 for tid in tids}
         progresses: dict[str, float | None] = {tid: None for tid in tids}
         states: dict[str, str] = {tid: "" for tid in tids}
+        terminal_sent: set[str] = set()
+        progress_last_emit: dict[str, float] = {tid: 0.0 for tid in tids}
+        progress_last_val: dict[str, float | None] = {tid: None for tid in tids}
         while pending:
             if cancel_checker is not None and cancel_checker.is_cancelled():
                 try:
@@ -1395,6 +1432,20 @@ class SyncExecutor:
                         progresses[tid] = float(progress) if progress is not None and str(progress).strip() != "" else None
                     except Exception:
                         progresses[tid] = None
+                    if on_item_progress is not None:
+                        pv = progresses.get(tid)
+                        if pv is not None:
+                            now_ts = _now_ts()
+                            last_ts = float(progress_last_emit.get(tid) or 0.0)
+                            last_val = progress_last_val.get(tid)
+                            if now_ts - last_ts >= 2.0:
+                                if last_val is None or abs(float(pv) - float(last_val)) >= 0.5 or now_ts - last_ts >= 6.0:
+                                    try:
+                                        on_item_progress(tid, float(pv))
+                                    except Exception:
+                                        pass
+                                    progress_last_emit[tid] = now_ts
+                                    progress_last_val[tid] = float(pv)
                     if logger.isEnabledFor(logging.DEBUG):
                         states[tid] = state
                         cur_progress = progresses.get(tid)
@@ -1433,6 +1484,12 @@ class SyncExecutor:
                                 pass
 
                     if terminal:
+                        if on_terminal is not None and tid not in terminal_sent and isinstance(data, dict):
+                            try:
+                                on_terminal(tid, dict(data))
+                            except Exception:
+                                pass
+                            terminal_sent.add(tid)
                         done.add(tid)
                     if _now_ts() - last_print > 2:
                         log.line(f"openlist task {tid}: state={state} raw_state={state_raw} progress={progress}")

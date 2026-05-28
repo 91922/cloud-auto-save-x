@@ -135,6 +135,15 @@ class OpenListClient:
             headers.update({str(k): str(v) for k, v in extra.items()})
         return headers
 
+    @staticmethod
+    def _latin1_transport(value: str) -> str:
+        text = str(value or "")
+        try:
+            text.encode("latin-1")
+            return text
+        except Exception:
+            return text.encode("utf-8").decode("latin-1")
+
     def _sleep(self, attempt: int) -> None:
         sleep_s = self.backoff_seconds * (2**attempt)
         sleep_s = sleep_s + random.random() * max(0.0, sleep_s / 5)
@@ -705,7 +714,7 @@ class OpenListClient:
         sha256: str | None = None,
         content_length: int | None = None,
     ) -> dict[str, Any]:
-        h: dict[str, str] = {"File-Path": file_path}
+        h: dict[str, str] = {"File-Path": self._latin1_transport(file_path)}
         if password:
             h["Password"] = password
         if md5:
@@ -740,7 +749,7 @@ class OpenListClient:
         password: str = "",
         data: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        h: dict[str, str] = {"File-Path": file_path}
+        h: dict[str, str] = {"File-Path": self._latin1_transport(file_path)}
         if password:
             h["Password"] = password
         url = self._url("/api/fs/form")
