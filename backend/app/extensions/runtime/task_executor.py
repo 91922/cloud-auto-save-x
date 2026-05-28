@@ -203,14 +203,14 @@ class TaskExecutor:
         if adapter is None:
             log.set_stage("select_account")
             log.section("验证账户")
-            log.line("FAIL: 没有匹配的驱动账号")
+            log.line("FAIL: 没有可用的驱动账号")
             log.set_stage("end")
             execution = TaskExecution(
                 task_id=task_id,
                 status='failed',
                 started_at=started_at,
                 finished_at=datetime.now(),
-                message='没有匹配的驱动账号',
+                message='没有可用的驱动账号',
                 stage=log.stage,
                 run_log=log.render(),
                 adapter_snapshot=json.dumps({}, ensure_ascii=False),

@@ -292,6 +292,8 @@ class AccountManager:
                 if (not allow_inactive) and (not adapter.is_active):
                     continue
                 return adapter
+            logger.warning("分享链接推断网盘类型为 '%s'，但没有可用的同类型账户", drive_type)
+            return None
 
         # 3. 使用默认适配器
         return self.default_adapter
