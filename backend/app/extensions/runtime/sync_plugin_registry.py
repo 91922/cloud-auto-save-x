@@ -44,5 +44,4 @@ class SyncPluginRegistry:
                 config.runtime_status = "error"
                 config.last_error = str(exc)
                 config.last_checked_at = now
-        self.db.flush()
         return sorted(items, key=lambda item: item["config"].priority)

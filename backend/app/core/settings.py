@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     app_name: str = "casx-api"
     environment: str = "dev"
 
+    scheduler_enabled: bool = True
+
     api_prefix: str = "/api"
 
     cors_origins: list[AnyUrl] = []

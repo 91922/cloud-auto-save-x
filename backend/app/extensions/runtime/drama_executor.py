@@ -105,6 +105,7 @@ class DramaTaskExecutor:
         self.adapter = adapter
         self.task_data = task_data
         self.log = log
+        self.transfer_count = 0
 
     def _set_stage(self, stage: str | None) -> None:
         if self.log:
@@ -303,6 +304,8 @@ class DramaTaskExecutor:
 
         if len(saved_fids) != len(plan):
             self._line(f"提示: saved_fids={len(saved_fids)} 与计划数={len(plan)} 不一致，将仅对齐前 {min(len(saved_fids), len(plan))} 项")
+        if saved_fids:
+            self.transfer_count += len(saved_fids)
         return saved_fids
 
     def _sync_share_dir(

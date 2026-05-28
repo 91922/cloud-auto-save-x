@@ -72,9 +72,11 @@ def create_app() -> FastAPI:
                 db.commit()
         except Exception as e:
             logger.warning("权限初始化失败: %s", e, exc_info=True)
-        task_scheduler_manager.start()
+        if bool(getattr(settings, "scheduler_enabled", True)):
+            task_scheduler_manager.start()
         yield
-        task_scheduler_manager.shutdown()
+        if bool(getattr(settings, "scheduler_enabled", True)):
+            task_scheduler_manager.shutdown()
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
