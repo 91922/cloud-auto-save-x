@@ -551,99 +551,105 @@ class SyncExecutor:
 
             self._persist_snapshots(int(task.id), source_map, target_map)
 
-            try:
-                sync_sync_plugin_definitions(self.db)
-                plugins = SyncPluginRegistry(self.db).load_active_plugins()
-                if plugins:
-                    addition = {}
-                    raw_addition = getattr(task, "addition_json", None)
-                    if raw_addition:
-                        try:
-                            parsed = json.loads(raw_addition)
-                        except Exception:
-                            parsed = None
-                        if isinstance(parsed, dict):
-                            addition = parsed
+            copied_files = int(stats.get("copied_files") or 0)
+            if copied_files <= 0:
+                log.set_stage("sync_plugin_run")
+                log.section("插件执行")
+                log.line("跳过: 本次无新增同步文件")
+            else:
+                try:
+                    sync_sync_plugin_definitions(self.db)
+                    plugins = SyncPluginRegistry(self.db).load_active_plugins()
+                    if plugins:
+                        addition = {}
+                        raw_addition = getattr(task, "addition_json", None)
+                        if raw_addition:
+                            try:
+                                parsed = json.loads(raw_addition)
+                            except Exception:
+                                parsed = None
+                            if isinstance(parsed, dict):
+                                addition = parsed
 
-                    sync_task_data: dict[str, Any] = {
-                        "uid": str(getattr(task, "uid", "") or ""),
-                        "name": str(getattr(task, "name", "") or ""),
-                        "enabled": bool(getattr(task, "enabled", True)),
-                        "source": {"type": source.type, "path": source.path},
-                        "target": {"type": target.type, "path": target.path},
-                        "mode": str(mode),
-                        "strategy": {
-                            "overwrite": bool(strategy.overwrite),
-                            "one_way_delete_extras": bool(strategy.one_way_delete_extras),
-                            "force_refresh": bool(strategy.force_refresh),
-                            "concurrency": int(strategy.concurrency),
-                            "request_interval_seconds": float(strategy.request_interval_seconds),
-                            "openlist_copy_batch_size": int(strategy.openlist_copy_batch_size),
-                        },
-                        "addition": addition,
-                        "execution_id": int(getattr(execution, "id", 0) or 0),
-                        "stats": stats,
-                    }
+                        sync_task_data: dict[str, Any] = {
+                            "uid": str(getattr(task, "uid", "") or ""),
+                            "name": str(getattr(task, "name", "") or ""),
+                            "enabled": bool(getattr(task, "enabled", True)),
+                            "source": {"type": source.type, "path": source.path},
+                            "target": {"type": target.type, "path": target.path},
+                            "mode": str(mode),
+                            "strategy": {
+                                "overwrite": bool(strategy.overwrite),
+                                "one_way_delete_extras": bool(strategy.one_way_delete_extras),
+                                "force_refresh": bool(strategy.force_refresh),
+                                "concurrency": int(strategy.concurrency),
+                                "request_interval_seconds": float(strategy.request_interval_seconds),
+                                "openlist_copy_batch_size": int(strategy.openlist_copy_batch_size),
+                            },
+                            "addition": addition,
+                            "execution_id": int(getattr(execution, "id", 0) or 0),
+                            "stats": stats,
+                        }
 
-                    sync_tree = Tree()
-                    sync_tree.create_node(
-                        str(sync_task_data.get("name") or "sync"),
-                        "root",
-                        data={"type": "sync_task", "uid": sync_task_data.get("uid")},
-                    )
-                    file_rows_for_tree = (
-                        self.db.execute(
-                            select(SyncExecutionFile)
-                            .where(SyncExecutionFile.sync_execution_id == int(execution.id))
-                            .order_by(SyncExecutionFile.path.asc())
+                        sync_tree = Tree()
+                        sync_tree.create_node(
+                            str(sync_task_data.get("name") or "sync"),
+                            "root",
+                            data={"type": "sync_task", "uid": sync_task_data.get("uid")},
                         )
-                        .scalars()
-                        .all()
-                    )
-                    for row in file_rows_for_tree[:5000]:
-                        p = str(getattr(row, "path", "") or "").strip()
-                        if not p:
-                            continue
-                        segments = [s for s in p.strip("/").split("/") if s]
-                        parent = "root"
-                        cur = ""
-                        for seg in segments[:-1]:
-                            cur = f"{cur}/{seg}" if cur else seg
-                            if not sync_tree.contains(cur):
-                                sync_tree.create_node(seg, cur, parent=parent, data={"is_dir": True, "path": cur})
-                            parent = cur
-                        leaf_id = f"{cur}/{segments[-1]}" if segments else p
-                        if not sync_tree.contains(leaf_id):
-                            sync_tree.create_node(
-                                segments[-1] if segments else p,
-                                leaf_id,
-                                parent=parent,
-                                data={
-                                    "path": p,
-                                    "action": getattr(row, "action", None),
-                                    "status": getattr(row, "status", None),
-                                    "size": getattr(row, "size", None),
-                                    "message": getattr(row, "message", None),
-                                    "is_dir": False,
-                                },
+                        file_rows_for_tree = (
+                            self.db.execute(
+                                select(SyncExecutionFile)
+                                .where(SyncExecutionFile.sync_execution_id == int(execution.id))
+                                .order_by(SyncExecutionFile.path.asc())
                             )
+                            .scalars()
+                            .all()
+                        )
+                        for row in file_rows_for_tree[:5000]:
+                            p = str(getattr(row, "path", "") or "").strip()
+                            if not p:
+                                continue
+                            segments = [s for s in p.strip("/").split("/") if s]
+                            parent = "root"
+                            cur = ""
+                            for seg in segments[:-1]:
+                                cur = f"{cur}/{seg}" if cur else seg
+                                if not sync_tree.contains(cur):
+                                    sync_tree.create_node(seg, cur, parent=parent, data={"is_dir": True, "path": cur})
+                                parent = cur
+                            leaf_id = f"{cur}/{segments[-1]}" if segments else p
+                            if not sync_tree.contains(leaf_id):
+                                sync_tree.create_node(
+                                    segments[-1] if segments else p,
+                                    leaf_id,
+                                    parent=parent,
+                                    data={
+                                        "path": p,
+                                        "action": getattr(row, "action", None),
+                                        "status": getattr(row, "status", None),
+                                        "size": getattr(row, "size", None),
+                                        "message": getattr(row, "message", None),
+                                        "is_dir": False,
+                                    },
+                                )
 
-                    log.set_stage("sync_plugin_task_before")
-                    log.section("插件前置")
-                    updated_list = PluginHookRunner.task_before(plugins, [sync_task_data], None, emit_line=log.line)
-                    sync_task_data = updated_list[0] if updated_list else sync_task_data
+                        log.set_stage("sync_plugin_task_before")
+                        log.section("插件前置")
+                        updated_list = PluginHookRunner.task_before(plugins, [sync_task_data], None, emit_line=log.line)
+                        sync_task_data = updated_list[0] if updated_list else sync_task_data
 
-                    log.set_stage("sync_plugin_run")
-                    log.section("插件执行")
-                    sync_task_data = PluginHookRunner.run(plugins, sync_task_data, None, sync_tree, emit_line=log.line)
+                        log.set_stage("sync_plugin_run")
+                        log.section("插件执行")
+                        sync_task_data = PluginHookRunner.run(plugins, sync_task_data, None, sync_tree, emit_line=log.line)
 
-                    log.set_stage("sync_plugin_task_after")
-                    log.section("插件收尾")
-                    PluginHookRunner.task_after(plugins, [sync_task_data], None, emit_line=log.line)
-            except Exception as e:
-                log.set_stage("sync_plugin_error")
-                log.section("插件异常")
-                log.line(str(e).strip() or type(e).__name__)
+                        log.set_stage("sync_plugin_task_after")
+                        log.section("插件收尾")
+                        PluginHookRunner.task_after(plugins, [sync_task_data], None, emit_line=log.line)
+                except Exception as e:
+                    log.set_stage("sync_plugin_error")
+                    log.section("插件异常")
+                    log.line(str(e).strip() or type(e).__name__)
 
             execution.status = "success"
             execution.finished_at = datetime.now()
