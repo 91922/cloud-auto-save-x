@@ -11,6 +11,7 @@ import type { TaskSuggestionItem } from '@/types/resourceSearch'
 import type { SyncTaskItem } from '@/types/syncTasks'
 import type { DriveBrowseItem, MagicRegexRule, SharePreviewItem, TaskItem } from '@/types/tasks'
 import { detectDriveTypeByUrl } from '@/utils/driveType'
+import { normalizeCloud189ShareUrl } from '@/utils/cloud189Share'
 
 const TMDB_IMAGE_BASE = 'https://image.tmdb.org/t/p/w185'
 
@@ -1179,10 +1180,13 @@ function runOnce() {
   const extra = buildExtraPayload()
   extra.allow_once = true
   extra.runweek = []
+  const normalizedShare = normalizeCloud189ShareUrl(state.shareurl.trim())
+  const shareurl = (normalizedShare?.url || state.shareurl).trim()
+  if (shareurl !== state.shareurl.trim()) state.shareurl = shareurl
   emit('run-once', {
     task_type: 'drama',
     taskname: state.taskname.trim(),
-    shareurl: state.shareurl.trim(),
+    shareurl,
     savepath: state.savepath.trim(),
     pattern: state.pattern ? String(state.pattern).trim() : null,
     replace: state.replace ? String(state.replace).trim() : null,
@@ -1203,10 +1207,13 @@ function runOnce() {
 function submit() {
   if (!validateBeforeSubmit()) return
   const account_name = state.account_choice !== '__AUTO__' ? state.account_choice : null
+  const normalizedShare = normalizeCloud189ShareUrl(state.shareurl.trim())
+  const shareurl = (normalizedShare?.url || state.shareurl).trim()
+  if (shareurl !== state.shareurl.trim()) state.shareurl = shareurl
   emit('save', {
     task_type: 'drama',
     taskname: state.taskname.trim(),
-    shareurl: state.shareurl.trim(),
+    shareurl,
     savepath: state.savepath.trim(),
     sync_task_uids: [...(state.sync_task_uids || [])],
     pattern: state.pattern ? String(state.pattern).trim() : null,
@@ -1490,7 +1497,7 @@ async function autoResolveShareFolder(shareurl: string, runId: number) {
 
   const isVideoFile = (name: any) => {
     const s = String(name || '').toLowerCase()
-    return /\.(mp4|mkv|mov|m4v|avi|mpeg|ts|flv|wmv|webm)$/.test(s)
+    return /\.(mp4|mkv|mov|m4v|avi|mpeg|ts|flv|wmv|webm|cas)$/.test(s)
   }
 
   for (let depth = 0; depth < 12; depth += 1) {
@@ -1547,6 +1554,11 @@ watch(
     const url = String(value || '').trim()
     if (!url) {
       autoFill.loading = false
+      return
+    }
+    const normalized = normalizeCloud189ShareUrl(url)
+    if (normalized?.url && normalized.url !== url) {
+      state.shareurl = normalized.url
       return
     }
     if (url === shareAuto.lastResolved) return

@@ -1,25 +1,54 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import re
 import os
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, TypeVar
 from zoneinfo import ZoneInfo
 
 from natsort import natsorted
 from treelib import Tree
 
 from app.core.errors import bad_request
+from app.core.settings import settings
 from app.extensions.runtime.execution_log import ExecutionLog
 from app.extensions.runtime.magic_rename import MagicRename
+from app.extensions.runtime.retry_utils import RetryResult, retry_call, summarize_payload
+
+
+logger = logging.getLogger(__name__)
 
 
 
 class SkipTask(Exception):
     pass
+
+
+T = TypeVar("T")
+
+
+def _validate_code_status(action: str, resp: Any) -> RetryResult:
+    if not isinstance(resp, dict):
+        return RetryResult(value=resp, ok=True)
+    status = resp.get("status")
+    if status is not None and status not in (200, "200"):
+        return RetryResult(
+            value=resp,
+            ok=False,
+            error_message=f"{action} status={status} message={resp.get('message') or ''} resp={summarize_payload(resp)}",
+        )
+    code = resp.get("code")
+    if code is not None and code not in (0, "0"):
+        return RetryResult(
+            value=resp,
+            ok=False,
+            error_message=f"{action} code={code} message={resp.get('message') or ''} resp={summarize_payload(resp)}",
+        )
+    return RetryResult(value=resp, ok=True)
 
 
 def _parse_enddate(value: str | None) -> date | None:
@@ -119,8 +148,48 @@ class DramaTaskExecutor:
         if self.log:
             self.log.line(text)
 
+    def _retry(
+        self,
+        *,
+        action: str,
+        fn: Callable[[], T],
+        validate: Callable[[T], RetryResult] | None = None,
+    ) -> T:
+        return retry_call(
+            action=action,
+            fn=fn,
+            validate=validate,
+            attempts=int(getattr(settings, "drama_runtime_retry_max_attempts", 3) or 3),
+            backoff_seconds=float(getattr(settings, "drama_runtime_retry_backoff_seconds", 1.0) or 1.0),
+            max_backoff_seconds=float(getattr(settings, "drama_runtime_retry_max_backoff_seconds", 8.0) or 8.0),
+            jitter_ratio=float(getattr(settings, "drama_runtime_retry_jitter_ratio", 0.2) or 0.2),
+            emit=self._line,
+            log=logger,
+        )
+
+    def _ls_dir(self, pdir_fid: str) -> dict[str, Any]:
+        return self._retry(
+            action="ls_dir",
+            fn=lambda: self.adapter.ls_dir(pdir_fid, max_items=0) or {},
+            validate=lambda r: _validate_code_status("ls_dir", r),
+        )
+
+    def _mkdir(self, savepath: str) -> dict[str, Any]:
+        return self._retry(
+            action="mkdir",
+            fn=lambda: self.adapter.mkdir(savepath),
+            validate=lambda r: _validate_code_status("mkdir", r),
+        )
+
+    def _query_task(self, job_id: str) -> dict[str, Any]:
+        return self._retry(
+            action="query_task",
+            fn=lambda: self.adapter.query_task(str(job_id)) or {},
+            validate=lambda r: _validate_code_status("query_task", r),
+        )
+
     def _try_get_dir_fid(self, dir_path: str) -> str | None:
-        fids = self.adapter.get_fids([dir_path]) or []
+        fids = self._retry(action="get_fids", fn=lambda: self.adapter.get_fids([dir_path]) or [])
         for item in fids:
             if (item.get("file_path") or item.get("path")) == dir_path and item.get("fid"):
                 return str(item["fid"])
@@ -132,7 +201,7 @@ class DramaTaskExecutor:
         existing = self._try_get_dir_fid(savepath)
         if existing:
             return existing
-        response = self.adapter.mkdir(savepath)
+        response = self._mkdir(savepath)
         if not response:
             raise RuntimeError("创建目录失败")
         created = self._try_get_dir_fid(savepath)
@@ -141,7 +210,7 @@ class DramaTaskExecutor:
         raise RuntimeError("创建目录失败")
 
     def _list_dest_names(self, dest_fid: str, ignore_extension: bool) -> set[str]:
-        listing = self.adapter.ls_dir(dest_fid, max_items=0) or {}
+        listing = self._ls_dir(dest_fid)
         raw_items = (((listing or {}).get("data") or {}).get("list")) or []
         names: set[str] = set()
         for raw in raw_items:
@@ -154,11 +223,25 @@ class DramaTaskExecutor:
         return names
 
     def _fetch_share_items(self, *, pwd_id: str, stoken: str, pdir_fid: str) -> list[dict[str, Any]]:
-        detail = self.adapter.get_detail(pwd_id, stoken, pdir_fid or "")
+        def _validate(detail: dict[str, Any]) -> RetryResult:
+            if not isinstance(detail, dict):
+                return RetryResult(value=detail, ok=False, error_message=f"get_detail invalid response: {summarize_payload(detail)}")
+            status = detail.get("status")
+            if status is not None and status not in (200, "200"):
+                return RetryResult(value=detail, ok=False, error_message=f"get_detail status={status} message={detail.get('message') or ''} resp={summarize_payload(detail)}")
+            code = detail.get("code")
+            if code is not None and code not in (0, "0"):
+                return RetryResult(value=detail, ok=False, error_message=f"get_detail code={code} message={detail.get('message') or ''} resp={summarize_payload(detail)}")
+            data = detail.get("data")
+            if not isinstance(data, dict) or data.get("list") is None:
+                return RetryResult(value=detail, ok=False, error_message=f"get_detail missing list: {summarize_payload(detail)}")
+            return RetryResult(value=detail, ok=True)
+
+        detail = self._retry(action="get_detail", fn=lambda: self.adapter.get_detail(pwd_id, stoken, pdir_fid or ""), validate=_validate)
         return (((detail or {}).get("data") or {}).get("list")) or []
 
     def _list_dest_dir_map(self, dest_fid: str) -> dict[str, str]:
-        listing = self.adapter.ls_dir(dest_fid, max_items=0) or {}
+        listing = self._ls_dir(dest_fid)
         raw_items = (((listing or {}).get("data") or {}).get("list")) or []
         result: dict[str, str] = {}
         for raw in raw_items:
@@ -279,7 +362,7 @@ class DramaTaskExecutor:
             job_id = ((save_ret.get("data") or {}).get("task_id") or (save_ret.get("data") or {}).get("taskId") or "").strip()
             if job_id:
                 self._line(f"转存任务 id: {job_id}")
-                qret = self.adapter.query_task(str(job_id)) or {}
+                qret = self._query_task(str(job_id))
                 status = ((qret.get("data") or {}).get("status"))
                 if status not in (2, "2", None):
                     err_msg = str((qret.get("data") or {}).get("message") or qret.get("message") or "转存任务失败")
@@ -517,22 +600,103 @@ class DramaTaskExecutor:
             )
         return plan
 
-    def _rename_by_fids(self, *, saved_fids: list[str], plan: list[DramaPlanItem]) -> None:
+    def _rename_one(self, *, fid: str, origin: str, target: str) -> bool:
+        fid = str(fid or "").strip()
+        origin = str(origin or "")
+        target = str(target or "")
+        if not fid or not origin or not target or origin == target:
+            return True
+        try:
+            self._retry(
+                action="rename",
+                fn=lambda: self.adapter.rename(fid, target),
+                validate=lambda r: _validate_code_status("rename", r),
+            )
+            return True
+        except Exception as exc:
+            self._line(f"FAIL: 重命名失败 {origin} → {target} err={str(exc).strip() or type(exc).__name__}")
+            return False
+
+    def _rename_by_fids(self, *, saved_fids: list[str], plan: list[DramaPlanItem], dest_root_fid: str) -> None:
+        dest_root_fid = str(dest_root_fid or "").strip()
+        attempted: list[tuple[str, str, str]] = []
+        failed: set[str] = set()
+
         limit = min(len(saved_fids), len(plan))
         for i in range(limit):
             fid = str(saved_fids[i] or "").strip()
             if not fid:
                 continue
-            origin = plan[i].origin_name
-            target = plan[i].target_name
+            origin = str(plan[i].origin_name or "")
+            target = str(plan[i].target_name or "")
             if not origin or not target or origin == target:
                 continue
+            attempted.append((fid, origin, target))
             self._line(f"重命名：{origin} → {target}")
-            ret = self.adapter.rename(fid, target)
-            if isinstance(ret, dict):
-                code = ret.get("code")
-                if code not in (0, "0", None):
-                    self._line(f"      ↑ 失败，{ret.get('message') or '未知错误'}")
+            if not self._rename_one(fid=fid, origin=origin, target=target):
+                failed.add(fid)
+
+        if not attempted or not dest_root_fid:
+            return
+
+        fid_name: dict[str, str] = {}
+        try:
+            listing = self._ls_dir(dest_root_fid)
+            items = (((listing or {}).get("data") or {}).get("list")) or []
+            for raw in items:
+                if _is_dir(raw):
+                    continue
+                fid = str(_get_fid(raw) or "").strip()
+                if not fid:
+                    continue
+                fid_name[fid] = str(_get_name(raw) or "")
+        except Exception as exc:
+            self._line(f"INFO: 重命名校验失败，无法读取目标目录 err={str(exc).strip() or type(exc).__name__}")
+            fid_name = {}
+
+        need_retry: list[tuple[str, str, str]] = []
+        for fid, origin, target in attempted:
+            current = fid_name.get(fid)
+            if current == target:
+                continue
+            need_retry.append((fid, origin, target))
+
+        retry_success = 0
+        retry_failed = 0
+        if need_retry:
+            self._line(f"二次校验：待重试 {len(need_retry)}/{len(attempted)}")
+            for fid, origin, target in need_retry:
+                self._line(f"重试重命名：{origin} → {target}")
+                if self._rename_one(fid=fid, origin=origin, target=target):
+                    retry_success += 1
+                else:
+                    retry_failed += 1
+
+        final_ok = 0
+        final_failed = 0
+        try:
+            listing = self._ls_dir(dest_root_fid)
+            items = (((listing or {}).get("data") or {}).get("list")) or []
+            fid_name = {}
+            for raw in items:
+                if _is_dir(raw):
+                    continue
+                fid = str(_get_fid(raw) or "").strip()
+                if not fid:
+                    continue
+                fid_name[fid] = str(_get_name(raw) or "")
+            for fid, _origin, target in attempted:
+                if fid_name.get(fid) == target:
+                    final_ok += 1
+                else:
+                    final_failed += 1
+        except Exception:
+            final_ok = len(attempted) - len(failed)
+            final_failed = len(failed)
+
+        self._line(
+            f"重命名摘要: total={len(attempted)} ok={final_ok} failed={final_failed} retry_ok={retry_success} retry_failed={retry_failed}"
+        )
 
 
 
@@ -598,7 +762,14 @@ class DramaTaskExecutor:
 
         self._set_stage("get_stoken")
         self._section("获取分享 token")
-        token_response = self.adapter.get_stoken(pwd_id, passcode or "")
+        def _validate_stoken(resp: dict[str, Any]) -> RetryResult:
+            st = ((resp or {}).get("data") or {}).get("stoken")
+            if st:
+                return RetryResult(value=resp, ok=True)
+            msg = (resp or {}).get("message") or "获取分享 token 失败"
+            return RetryResult(value=resp, ok=False, error_message=f"{msg} resp={summarize_payload(resp)}")
+
+        token_response = self._retry(action="get_stoken", fn=lambda: self.adapter.get_stoken(pwd_id, passcode or ""), validate=_validate_stoken)
         stoken = ((token_response or {}).get("data") or {}).get("stoken")
         if not stoken:
             message = (token_response or {}).get("message") or "获取分享 token 失败"
@@ -623,7 +794,7 @@ class DramaTaskExecutor:
         except Exception:
             pass
         ignore_extension = bool(self.task_data.get("ignore_extension"))
-        dest_listing = self.adapter.ls_dir(dest_root_fid, max_items=0) or {}
+        dest_listing = self._ls_dir(dest_root_fid)
         dest_file_list = (((dest_listing or {}).get("data") or {}).get("list")) or []
         dest_dir_map = {}
         dest_names = set()
@@ -661,7 +832,7 @@ class DramaTaskExecutor:
             saved_fids = self._save_with_saved_fids(pwd_id=str(pwd_id), stoken=str(stoken), dest_root_fid=dest_root_fid, plan=plan)
             self._set_stage("rename")
             self._section("重命名")
-            self._rename_by_fids(saved_fids=saved_fids, plan=plan)
+            self._rename_by_fids(saved_fids=saved_fids, plan=plan, dest_root_fid=dest_root_fid)
             limit = min(len(plan), len(saved_fids))
             for i in range(limit):
                 item = plan[i]

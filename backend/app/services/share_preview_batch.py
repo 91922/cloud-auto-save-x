@@ -157,6 +157,7 @@ video_exts = {
     ".mpg",
     ".mpeg",
     ".3gp",
+    ".cas",
 }
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -19,6 +21,18 @@ from app.extensions.runtime.plugin_loader import sync_plugin_definitions
 from app.extensions.runtime.plugin_registry import PluginRegistry
 from app.models.task import Task
 from app.models.task_execution import TaskExecution
+
+
+logger = logging.getLogger(__name__)
+
+
+def _truncate(s: str, max_len: int) -> str:
+    s = str(s or "")
+    if max_len <= 0:
+        return ""
+    if len(s) <= max_len:
+        return s
+    return f"{s[:max_len]}...(truncated,len={len(s)})"
 
 
 @dataclass(slots=True)
@@ -123,6 +137,7 @@ class TaskExecutor:
                 self.db.expire_all()
             except Exception:
                 pass
+        external_manager = account_manager is not None
         if account_manager is None:
             account_manager = DatabaseAccountManager(self.db)
         task_data = self._task_to_dict(task)
@@ -227,6 +242,14 @@ class TaskExecutor:
             task_list = PluginHookRunner.task_before(plugins, [task_data], default_adapter, emit_line=log.line)
             task_data = task_list[0] if task_list else task_data
         adapter = account_manager.get_adapter_for_task(task_data)
+        if adapter is None and external_manager:
+            try:
+                fallback_manager = DatabaseAccountManager(self.db)
+                fallback_manager.init_for_tasks([task_data])
+                account_manager = fallback_manager
+                adapter = account_manager.get_adapter_for_task(task_data)
+            except Exception:
+                adapter = None
         started_at = datetime.now()
         task_id = int(getattr(task, "id", 0) or 0)
         snapshot_row = None
@@ -423,6 +446,17 @@ class TaskExecutor:
             status = 'skipped' if isinstance(exc, SkipTask) else 'failed'
             stage = log.stage or "unknown"
             message = str(exc).strip() or type(exc).__name__
+            try:
+                logger.exception(
+                    "任务执行异常 task_id=%s task_uid=%s task_type=%s stage=%s err=%s",
+                    task_id,
+                    str(getattr(task, "task_uid", "") or ""),
+                    str(getattr(task, "task_type", "") or ""),
+                    stage,
+                    message,
+                )
+            except Exception:
+                pass
             if (
                 status == "failed"
                 and str(getattr(task, "task_type", "") or "") == "drama"
@@ -434,6 +468,11 @@ class TaskExecutor:
                     self.db.flush()
             log.section("异常")
             log.line(f"阶段={stage}: {message}")
+            tb = _truncate(traceback.format_exc().rstrip(), 8000)
+            if tb.strip():
+                log.section("Traceback")
+                for line in tb.splitlines():
+                    log.line(line)
             log.set_stage(stage)
             log.section("程序结束")
             finished_at_local = datetime.now()

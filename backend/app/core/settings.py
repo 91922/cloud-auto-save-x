@@ -75,6 +75,11 @@ class Settings(BaseSettings):
     tasks_share_preview_batch_db_cache_ttl_seconds: int = 6 * 60 * 60
     tasks_share_preview_batch_db_cache_retention_seconds: int = 7 * 24 * 60 * 60
 
+    drama_runtime_retry_max_attempts: int = 3
+    drama_runtime_retry_backoff_seconds: float = 1.0
+    drama_runtime_retry_max_backoff_seconds: float = 8.0
+    drama_runtime_retry_jitter_ratio: float = 0.2
+
     jwt_secret_key: str | None = None
     jwt_algorithm: str = "HS256"
     access_token_expires_seconds: int = 2 * 60 * 60

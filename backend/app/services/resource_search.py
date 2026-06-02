@@ -336,6 +336,8 @@ class CloudSaverClient:
                 if enable_filter and not _title_contains_keyword(str(item.get("title") or "")):
                     continue
                 title = _strip_html(item.get("title") or "").strip() or ""
+                if keyword and not _title_contains_keyword(title):
+                    continue
                 desc = _strip_html(item.get("desc") or item.get("content") or "").strip() or ""
                 tm = item.get("datetime") or item.get("time") or ""
                 if tm:
@@ -474,6 +476,15 @@ def fetch_task_suggestions(
 
     def net_search():
         try:
+            def clean_search_results(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                out = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if keyword not in item.get("title"):
+                        continue
+                    out.append(item)
+                return out
             if not rows["net"].enabled:
                 return []
             base_url = base64.b64decode("aHR0cHM6Ly9wYW5zZWFyY2guMTIzY2YudG9w").decode()
@@ -483,8 +494,8 @@ def fetch_task_suggestions(
 
             if isinstance(data, dict):
                 items = data.get("data") if isinstance(data.get("data"), list) else []
-                return items
-            return data if isinstance(data, list) else []
+                return clean_search_results(items)
+            return clean_search_results(items)
         except Exception:
             return []
 

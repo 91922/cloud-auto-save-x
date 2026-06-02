@@ -1015,7 +1015,12 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
         raise bad_request('TASK_SHARE_TOKEN_FAILED', str(message))
     pdir_fid = payload.pdir_fid if payload.pdir_fid is not None else (extracted_pdir_fid or "")
     detail = adapter.get_detail(pwd_id, stoken, pdir_fid or "")
-    raw_items = (((detail or {}).get("data") or {}).get("list")) or []
+    data = (detail or {}).get("data") or {}
+    if isinstance(data, dict):
+        resolved = str(data.get("resolved_pdir_fid") or "").strip()
+        if resolved:
+            pdir_fid = resolved
+    raw_items = (data.get("list") if isinstance(data, dict) else None) or []
     taskname = str(payload.taskname or "")
     pattern = str(payload.pattern or "")
     replace = str(payload.replace or "")
@@ -1128,6 +1133,7 @@ def post_share_preview(payload: SharePreviewIn, db: Session = Depends(get_db)):
         ".mpg",
         ".mpeg",
         ".3gp",
+        ".cas",
     }
 
     def _is_video_name(name: str) -> bool:

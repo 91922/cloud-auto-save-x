@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse, quote
+from urllib.parse import parse_qs, urlparse, quote, unquote
 from xml.etree import ElementTree as ET
 
 import requests
@@ -202,6 +202,26 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
         if len(s) < 7:
             return s
         return f"{s[:3]}****{s[-4:]}"
+
+    def _tail(self, value: str, n: int = 6) -> str:
+        s = str(value or "").strip()
+        if not s:
+            return ""
+        return s[-n:] if len(s) > n else s
+
+    def _mask_passcode(self, value: str) -> str:
+        s = str(value or "").strip()
+        if not s:
+            return ""
+        if len(s) <= 1:
+            return "*"
+        return f"{s[0]}***"
+
+    def _snippet(self, text: str, n: int = 200) -> str:
+        s = str(text or "").replace("\n", " ").replace("\r", " ").strip()
+        if len(s) <= n:
+            return s
+        return s[:n]
 
     def _finalize_login(self) -> Any:
         info = self._get_logined_infos() or {}
@@ -951,22 +971,76 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
     def extract_url(self, url: str) -> Tuple[Optional[str], str, Any, List]:
         if not url:
             return None, "", 0, []
-        raw = url.strip()
+        raw = str(url).strip()
+        normalized = raw.replace("？", "?").replace("＆", "&")
+        compact = re.sub(r"\s+", "", normalized)
+        try:
+            compact = unquote(compact)
+        except Exception:
+            pass
+
         passcode = ""
-        m = re.search(r"访问码[:：]\s*([a-zA-Z0-9]+)", raw)
-        if m:
-            passcode = m.group(1).strip()
-        u = raw.split("（")[0].split("(")[0].strip()
-        parsed = urlparse(u)
+        access_patterns = [
+            r"[（(]访问码[：:]\s*([a-zA-Z0-9]{4})[)）]",
+            r"[（(]提取码[：:]\s*([a-zA-Z0-9]{4})[)）]",
+            r"访问码[：:]\s*([a-zA-Z0-9]{4})",
+            r"提取码[：:]\s*([a-zA-Z0-9]{4})",
+            r"[（(]([a-zA-Z0-9]{4})[)）]",
+        ]
+        for pat in access_patterns:
+            m = re.search(pat, compact)
+            if not m:
+                continue
+            passcode = (m.group(1) or "").strip()
+            compact = compact.replace(m.group(0), "", 1)
+            break
+
+        extracted_url = ""
+        url_patterns = [
+            r"(https?://cloud\.189\.cn/web/share\?[^\s]+)",
+            r"(https?://cloud\.189\.cn/t/[a-zA-Z0-9]+[^\s]*)",
+            r"(https?://h5\.cloud\.189\.cn/share\.html#/t/[a-zA-Z0-9]+[^\s]*)",
+            r"(https?://[^/]+/web/share\?[^\s]+)",
+            r"(https?://[^/]+/t/[a-zA-Z0-9]+[^\s]*)",
+            r"(https?://[^/]+/share\.html[^\s]*)",
+            r"(https?://content\.21cn\.com[^\s]+)",
+        ]
+        for pat in url_patterns:
+            m = re.search(pat, compact)
+            if m:
+                extracted_url = m.group(1)
+                break
+        if not extracted_url:
+            m = re.search(r"(https?://[^\s]+)", normalized)
+            if m:
+                extracted_url = m.group(1)
+        if not extracted_url:
+            extracted_url = raw
+
+        parsed = urlparse(extracted_url)
         qs = parse_qs(parsed.query or "")
         if not passcode:
             passcode = (qs.get("pwd") or qs.get("passcode") or qs.get("accessCode") or [""])[0] or ""
+
         code = ""
-        m = re.search(r"/t/([^/?#]+)", parsed.path or "")
-        if m:
-            code = m.group(1)
-        if not code:
+        if "content.21cn.com" in (parsed.netloc or ""):
+            try:
+                frag = parsed.fragment or ""
+                if "?" in frag:
+                    frag_qs = parse_qs(frag.split("?", 1)[1])
+                    code = (frag_qs.get("shareCode") or [""])[0] or ""
+            except Exception:
+                code = ""
+        if not code and (parsed.path or "") == "/web/share":
             code = (qs.get("code") or [""])[0] or ""
+        if not code and (parsed.path or "").startswith("/t/"):
+            code = (parsed.path or "").split("/")[-1] or ""
+        if not code and (parsed.fragment or "") and "/t/" in (parsed.fragment or ""):
+            code = (parsed.fragment or "").split("/")[-1] or ""
+        if not code and "share.html" in (parsed.path or "") and (parsed.fragment or ""):
+            parts = (parsed.fragment or "").split("/")
+            code = parts[-1] if parts else ""
+
         self._last_share_code = code or ""
         pdir_fid = "0"
         frag = (parsed.fragment or "").strip()
@@ -1005,26 +1079,86 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
         url = f"{self.HOST_URL}/api/open/share/getShareInfoByCodeV2.action"
         resp = self._session.get(url, params={"noCache": str(time.time()), "shareCode": share_code}, timeout=15)
         if resp.status_code != 200:
+            logger.warning(
+                "[cloud189] getShareInfoByCodeV2 http_status=%s share=%s",
+                int(resp.status_code),
+                self._tail(share_code),
+            )
             return None
         try:
             j = resp.json()
-            if isinstance(j, dict) and int(j.get("res_code", 1)) == 0:
-                share_id = str(j.get("shareId") or "")
+            if isinstance(j, dict):
+                res_code = str(j.get("res_code") or j.get("resCode") or "").strip()
+                res_msg = str(j.get("res_message") or j.get("resMessage") or "").strip()
+                res_code = str(j.get("res_code") or j.get("resCode") or "").strip()
+                ok = res_code in ("0", "") or j.get("res_code") == 0
                 file_id = str(j.get("fileId") or "")
-                if not share_id or not file_id:
-                    return None
-                return {
-                    "shareId": share_id,
-                    "fileId": file_id,
-                    "shareMode": str(j.get("shareMode") or "3"),
-                    "isFolder": bool(j.get("isFolder")),
-                    "fileName": str(j.get("fileName") or ""),
-                }
+                share_mode = str(j.get("shareMode") or "3")
+                if ok:
+                    share_id = str(j.get("shareId") or "")
+                    if not file_id:
+                        logger.warning(
+                            "[cloud189] getShareInfoByCodeV2 missing fields ok=%s share=%s res_code=%s res_msg=%s share_id=%s file_id=%s",
+                            ok,
+                            self._tail(share_code),
+                            res_code,
+                            res_msg,
+                            self._tail(share_id),
+                            self._tail(file_id),
+                        )
+                        return None
+                    if not share_id:
+                        logger.warning(
+                            "[cloud189] getShareInfoByCodeV2 share_id_empty ok=%s share=%s res_code=%s res_msg=%s share_mode=%s file_id=%s",
+                            ok,
+                            self._tail(share_code),
+                            res_code,
+                            res_msg,
+                            share_mode,
+                            self._tail(file_id),
+                        )
+                    return {
+                        "shareId": share_id,
+                        "fileId": file_id,
+                        "shareMode": share_mode,
+                        "isFolder": bool(j.get("isFolder")),
+                        "fileName": str(j.get("fileName") or ""),
+                    }
+                if file_id:
+                    logger.info(
+                        "[cloud189] getShareInfoByCodeV2 non_ok share=%s res_code=%s res_msg=%s share_mode=%s file_id=%s share_id=%s",
+                        self._tail(share_code),
+                        res_code,
+                        res_msg,
+                        share_mode,
+                        self._tail(file_id),
+                        self._tail(str(j.get("shareId") or "")),
+                    )
+                    return {
+                        "shareId": str(j.get("shareId") or ""),
+                        "fileId": file_id,
+                        "shareMode": share_mode,
+                        "isFolder": bool(j.get("isFolder")),
+                        "fileName": str(j.get("fileName") or ""),
+                    }
+                if res_code or res_msg:
+                    logger.warning(
+                        "[cloud189] getShareInfoByCodeV2 failed share=%s res_code=%s res_msg=%s body=%s",
+                        self._tail(share_code),
+                        res_code,
+                        res_msg,
+                        self._snippet(resp.text),
+                    )
         except Exception:
             pass
 
         text = (resp.text or "").strip()
         if not text.startswith("<?xml"):
+            logger.warning(
+                "[cloud189] getShareInfoByCodeV2 unexpected_body share=%s body=%s",
+                self._tail(share_code),
+                self._snippet(text),
+            )
             return None
         root = ET.fromstring(text)
         share_id = self._xml_text(root, "shareId")
@@ -1033,6 +1167,13 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
         is_folder = self._xml_text(root, "isFolder").lower() == "true"
         file_name = self._xml_text(root, "fileName")
         if not share_id or not file_id:
+            logger.warning(
+                "[cloud189] getShareInfoByCodeV2 xml_missing_fields share=%s share_id=%s file_id=%s share_mode=%s",
+                self._tail(share_code),
+                self._tail(share_id),
+                self._tail(file_id),
+                share_mode,
+            )
             return None
         return {
             "shareId": share_id,
@@ -1042,7 +1183,67 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
             "fileName": file_name,
         }
 
-    def _list_share_dir_by_code_v2(self, meta: Dict[str, Any], file_id: str, access_code: str) -> List[Dict[str, Any]]:
+    def _check_access_code(self, share_code: str, access_code: str) -> Optional[str]:
+        if not share_code or not access_code:
+            return None
+        url = f"{self.HOST_URL}/api/open/share/checkAccessCode.action"
+        logger.info(
+            "[cloud189] checkAccessCode request share=%s passcode=%s",
+            self._tail(share_code),
+            self._mask_passcode(access_code),
+        )
+        resp = self._session.get(
+            url,
+            params={
+                "noCache": str(time.time()),
+                "shareCode": str(share_code),
+                "accessCode": str(access_code),
+                "uuid": str(uuid.uuid4()),
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            logger.warning(
+                "[cloud189] checkAccessCode http_status=%s share=%s",
+                int(resp.status_code),
+                self._tail(share_code),
+            )
+            return None
+        try:
+            j = resp.json()
+        except Exception:
+            logger.warning(
+                "[cloud189] checkAccessCode invalid_json share=%s body=%s",
+                self._tail(share_code),
+                self._snippet(resp.text),
+            )
+            return None
+        if not isinstance(j, dict):
+            return None
+        res_code = str(j.get("res_code") or j.get("resCode") or "").strip()
+        res_msg = str(j.get("res_message") or j.get("resMessage") or "").strip()
+        share_id = str(j.get("shareId") or "").strip()
+        logger.info(
+            "[cloud189] checkAccessCode response share=%s res_code=%s res_msg=%s share_id=%s",
+            self._tail(share_code),
+            res_code,
+            res_msg,
+            self._tail(share_id),
+        )
+        if not share_id:
+            logger.warning(
+                "[cloud189] checkAccessCode failed share=%s res_code=%s res_msg=%s passcode=%s body=%s",
+                self._tail(share_code),
+                res_code,
+                res_msg,
+                self._mask_passcode(access_code),
+                self._snippet(resp.text),
+            )
+        return share_id or None
+
+    def _list_share_dir_by_code_v2(
+        self, meta: Dict[str, Any], file_id: str, access_code: str, *, is_folder: bool = True
+    ) -> List[Dict[str, Any]]:
         url = f"{self.HOST_URL}/api/open/share/listShareDir.action"
         params: Dict[str, Any] = {
             "noCache": str(time.time()),
@@ -1050,7 +1251,7 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
             "pageSize": 60,
             "fileId": str(file_id),
             "shareDirFileId": str(file_id),
-            "isFolder": "true",
+            "isFolder": "true" if is_folder else "false",
             "shareId": str(meta.get("shareId") or ""),
             "shareMode": str(meta.get("shareMode") or "3"),
             "iconOption": 5,
@@ -1066,6 +1267,15 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
             try:
                 j = resp.json()
                 if isinstance(j, dict) and int(j.get("res_code", 1)) != 0:
+                    logger.warning(
+                        "[cloud189] listShareDir failed share_id=%s file_id=%s share_mode=%s res_code=%s res_msg=%s passcode=%s",
+                        self._tail(str(meta.get("shareId") or "")),
+                        self._tail(str(file_id)),
+                        str(meta.get("shareMode") or ""),
+                        str(j.get("res_code") or ""),
+                        str(j.get("res_message") or ""),
+                        self._mask_passcode(access_code),
+                    )
                     raise RuntimeError(j.get("res_message") or "解析分享失败")
                 ao = j.get("fileListAO") if isinstance(j, dict) else None
                 if not isinstance(ao, dict):
@@ -1112,6 +1322,13 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
             except Exception:
                 text = (resp.text or "").strip()
                 if not text.startswith("<?xml"):
+                    logger.warning(
+                        "[cloud189] listShareDir unexpected_body share_id=%s file_id=%s share_mode=%s body=%s",
+                        self._tail(str(meta.get("shareId") or "")),
+                        self._tail(str(file_id)),
+                        str(meta.get("shareMode") or ""),
+                        self._snippet(text),
+                    )
                     raise RuntimeError("解析分享失败")
                 root = ET.fromstring(text)
                 file_list_node = root.find("fileList")
@@ -1201,15 +1418,41 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
             share_code = pwd_id
             meta2 = self._get_share_info_by_code_v2(share_code)
             if meta2:
+                share_mode = str(meta2.get("shareMode") or "3")
+                share_id = str(meta2.get("shareId") or "")
+                if share_mode == "1":
+                    if not passcode:
+                        return {"status": 400, "message": "提取码不能为空", "data": {}}
+                    checked = self._check_access_code(share_code, passcode or "")
+                    if not checked:
+                        logger.warning(
+                            "[cloud189] get_stoken access_code_invalid share=%s share_mode=%s",
+                            self._tail(share_code),
+                            share_mode,
+                        )
+                        return {"status": 403, "message": "提取码错误", "data": {}}
+                    share_id = checked
+                if not share_id:
+                    logger.warning(
+                        "[cloud189] get_stoken share_id_empty share=%s share_mode=%s file_id=%s",
+                        self._tail(share_code),
+                        share_mode,
+                        self._tail(str(meta2.get("fileId") or "")),
+                    )
                 stoken_obj = {
-                    "shareId": meta2.get("shareId"),
-                    "shareMode": meta2.get("shareMode") or "3",
+                    "shareId": share_id,
+                    "shareMode": share_mode,
                     "rootFileId": meta2.get("fileId"),
                     "isFolder": bool(meta2.get("isFolder")),
                     "accessCode": passcode or "",
                 }
                 return {"status": 200, "data": {"stoken": json.dumps(stoken_obj, ensure_ascii=False)}}
 
+            logger.warning(
+                "[cloud189] get_stoken fallback_web_share share=%s passcode=%s",
+                self._tail(share_code),
+                self._mask_passcode(passcode),
+            )
             html = self._fetch_share_page(pwd_id)
             meta = self._parse_share_page(html)
             if meta.get("invalid") == "1":
@@ -1217,6 +1460,11 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
             share_id = meta.get("shareId") or ""
             is_file = meta.get("is_file") == "1"
             if not share_id:
+                logger.warning(
+                    "[cloud189] get_stoken parse_share_page_failed share=%s body=%s",
+                    self._tail(share_code),
+                    self._snippet(html),
+                )
                 return {"status": 404, "message": "解析分享失败", "data": {}}
             if is_file:
                 ok = self._verify_share_file(share_id, passcode or "")
@@ -1292,13 +1540,30 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
                 st = json.loads(stoken) if stoken and stoken.strip().startswith("{") else {}
                 if isinstance(st, dict):
                     access_code = str(st.get("accessCode") or "")
+                    token_share_id = str(st.get("shareId") or "").strip()
+                    token_share_mode = str(st.get("shareMode") or "").strip()
+                    token_root_file_id = str(st.get("rootFileId") or "").strip()
+                    if token_share_id and not share_id:
+                        share_id = token_share_id
+                    if token_share_mode:
+                        share_mode = token_share_mode
+                    if token_root_file_id and not root_file_id:
+                        root_file_id = token_root_file_id
             except Exception:
                 access_code = ""
             file_id = root_file_id if not pdir_fid or str(pdir_fid) in ("0", "root", "/") else str(pdir_fid)
+            resolved_pdir_fid: str | None = None
             try:
-                items = self._list_share_dir_by_code_v2(
-                    {"shareId": share_id, "shareMode": share_mode}, file_id, access_code
-                )
+                share_meta = {"shareId": share_id, "shareMode": share_mode}
+                items = self._list_share_dir_by_code_v2(share_meta, file_id, access_code, is_folder=True)
+                if (not items) and file_id and (file_id != root_file_id) and str(file_id) not in ("0", "root", "/"):
+                    file_items = self._list_share_dir_by_code_v2(share_meta, file_id, access_code, is_folder=False)
+                    if file_items:
+                        parent_id = str(file_items[0].get("parentId") or "").strip()
+                        if parent_id and parent_id != file_id:
+                            resolved_pdir_fid = parent_id
+                            file_id = parent_id
+                            items = self._list_share_dir_by_code_v2(share_meta, file_id, access_code, is_folder=True)
             except Exception as e:
                 return {"code": 1, "message": str(e) or "解析分享失败", "data": {"list": []}}
             parent_id = str(file_id)
@@ -1329,7 +1594,10 @@ FlhDeqVOG094hFJvZeK4OzA6HVwzwnEW5vIZ7d+u61RV1bsFxmB68+8JXs3ycGcE
                     full_path = self._build_share_full_path_by_code_v2(share_meta, root_file_id, file_id, access_code)
                 except Exception:
                     full_path = []
-            return {"code": 0, "message": "success", "data": {"list": data_list, "full_path": full_path}}
+            data: Dict[str, Any] = {"list": data_list, "full_path": full_path}
+            if resolved_pdir_fid:
+                data["resolved_pdir_fid"] = resolved_pdir_fid
+            return {"code": 0, "message": "success", "data": data}
 
         html = self._fetch_share_page(pwd_id)
         meta = self._parse_share_page(html)
