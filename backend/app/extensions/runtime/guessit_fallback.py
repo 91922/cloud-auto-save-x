@@ -304,16 +304,15 @@ def _guessit_parse(
         _trace(trace_tag, f"error: import guessit failed: {type(exc).__name__}: {exc}")
         return {}
 
-    opts = None
     mt = str(media_type or "").strip().lower()
-    if mt == "movie":
-        opts = {"type": "movie"}
-    elif mt == "tv":
-        opts = {"type": "episode"}
-
     try:
-        if opts is not None:
-            return guessit(sanitized, options=opts) or {}
+        if mt == "tv":
+            info = guessit(sanitized) or {}
+            if str(info.get("type") or "").lower() == "episode":
+                return info
+            return guessit(sanitized, options={"type": "episode"}) or {}
+        if mt == "movie":
+            return guessit(sanitized, options={"type": "movie"}) or {}
         return guessit(sanitized) or {}
     except Exception as exc:
         _trace(trace_tag, f"error: guessit() failed: {type(exc).__name__}: {exc}")
