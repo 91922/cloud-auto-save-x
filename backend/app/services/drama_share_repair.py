@@ -16,6 +16,7 @@ from app.schemas.task_browse import SharePreviewBatchIn
 from app.services.notifications.sender import send_runtime
 from app.services.notifications.task_notify import DRAMA_NOTIFY_TITLE
 from app.services.invalid_share_links import list_invalid_shareurls
+from app.services.drama_share_autoupdate import resolve_drama_shareurl_update
 from app.services.resource_search import fetch_task_suggestions
 from app.services.share_preview_batch import preview_share_batch
 from app.services.tmdb_cache import get_tmdb_detail_cached
@@ -178,6 +179,43 @@ def repair_banned_drama_tasks(db: Session) -> dict:
                 drive_type,
                 str(getattr(task, "shareurl_ban", "") or "").strip(),
             )
+            if str(drive_type) == "115":
+                update_result = resolve_drama_shareurl_update(db, task, respect_toggle=False)
+                if bool(update_result.get("db_changed")):
+                    db_changed = True
+                if not bool(update_result.get("updated")):
+                    if debug:
+                        logger.debug(
+                            f"[repair] task_id={task_id} skip_115_update reason={str(update_result.get('reason') or '')}"
+                        )
+                    logger.info(
+                        "[repair] skip task_id=%s name=%s reason=%s",
+                        task_id,
+                        taskname,
+                        str(update_result.get("reason") or "115_no_update"),
+                    )
+                    continue
+                db_changed = True
+                repaired.append(
+                    {
+                        "task_id": int(getattr(task, "id", 0) or 0),
+                        "taskname": str(getattr(task, "taskname", "") or ""),
+                        "drive_type": drive_type,
+                        "old_shareurl": str(update_result.get("old_shareurl") or old_shareurl),
+                        "new_shareurl": str(update_result.get("new_shareurl") or ""),
+                        "season": update_result.get("season"),
+                        "episode": update_result.get("episode"),
+                        "size": update_result.get("size"),
+                    }
+                )
+                logger.info(
+                    "[repair] repaired task_id=%s name=%s old=%s new=%s",
+                    task_id,
+                    taskname,
+                    old_shareurl,
+                    str(update_result.get("new_shareurl") or ""),
+                )
+                continue
 
             suggestions: list[dict] = []
             changed = False

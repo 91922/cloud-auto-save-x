@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.extensions.runtime.guessit_fallback import guessit_episode_numbers
 from app.models.task_savepath_snapshot import TaskSavepathSnapshot
 from app.schemas.task import DramaUpdateProgressOut
 
@@ -14,26 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 _SH_TZ = ZoneInfo("Asia/Shanghai")
-_VIDEO_EXTS = {
-    ".mp4",
-    ".mkv",
-    ".avi",
-    ".ts",
-    ".m2ts",
-    ".mov",
-    ".wmv",
-    ".flv",
-    ".webm",
-    ".m4v",
-    ".cas",
-}
-
-
-def _pick_tv_seasons(details: dict[str, Any] | None) -> list[dict] | None:
-    if not isinstance(details, dict):
-        return None
-    raw = details.get("seasons")
-    return raw if isinstance(raw, list) else None
 
 
 def _parse_air_date(value: Any) -> date | None:
@@ -73,50 +51,25 @@ def resolve_tmdb_latest_aired_episode(details: dict[str, Any] | None) -> tuple[i
     return season, episode, None
 
 
-def resolve_saved_latest_episode_for_season(
+def resolve_saved_latest_episode_from_snapshot(
     *,
     snapshot: TaskSavepathSnapshot,
     tmdb_season: int,
-    tv_seasons: list[dict] | None,
-    max_items: int = 2000,
 ) -> tuple[int | None, int | None, str | None]:
-    payload = None
     try:
-        payload = json.loads(snapshot.files_json or "[]")
+        saved_season = int(getattr(snapshot, "saved_latest_season", None) or 0)
     except Exception:
-        payload = None
-    if not isinstance(payload, list):
-        return None, None, "快照 files_json 无法解析"
+        saved_season = 0
+    try:
+        saved_episode = int(getattr(snapshot, "saved_latest_episode", None) or 0)
+    except Exception:
+        saved_episode = 0
 
-    items = payload[: max(0, int(max_items))]
-    truncated = len(payload) > len(items)
-
-    best_episode = 0
-    matched = 0
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-        name = str(it.get("file_name") or "").strip()
-        if not name:
-            continue
-        ext = ""
-        if "." in name:
-            ext = "." + name.rsplit(".", 1)[-1].lower()
-        if ext and ext not in _VIDEO_EXTS:
-            continue
-        season, episode = guessit_episode_numbers(name, tv_seasons=tv_seasons)
-        if season is None or episode is None:
-            continue
-        if int(season) != int(tmdb_season):
-            continue
-        matched += 1
-        if int(episode) > best_episode:
-            best_episode = int(episode)
-
-    if matched <= 0:
+    if saved_season <= 0 or saved_episode <= 0:
+        return None, None, "快照未记录已存最新集数"
+    if int(saved_season) != int(tmdb_season):
         return None, None, "当前季无匹配文件"
-    reason = "文件过多已截断" if truncated else None
-    return int(tmdb_season), int(best_episode), reason
+    return int(saved_season), int(saved_episode), None
 
 
 def build_drama_update_progress(
@@ -137,11 +90,9 @@ def build_drama_update_progress(
     if snapshot is None:
         return DramaUpdateProgressOut(available=False, tmdb_season=tmdb_season, tmdb_episode=tmdb_episode, reason="无快照")
 
-    tv_seasons = _pick_tv_seasons(tmdb_details)
-    saved_season, saved_episode, saved_reason = resolve_saved_latest_episode_for_season(
+    saved_season, saved_episode, saved_reason = resolve_saved_latest_episode_from_snapshot(
         snapshot=snapshot,
         tmdb_season=int(tmdb_season),
-        tv_seasons=tv_seasons,
     )
 
     if saved_season is None or saved_episode is None:

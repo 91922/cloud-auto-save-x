@@ -23,4 +23,7 @@ class TaskSavepathSnapshot(Base):
     files_json: Mapped[str] = mapped_column(Text, nullable=False)
     file_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     total_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    saved_latest_season: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    saved_latest_episode: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    saved_latest_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

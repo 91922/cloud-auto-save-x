@@ -21,6 +21,7 @@ from app.extensions.runtime.plugin_loader import sync_plugin_definitions
 from app.extensions.runtime.plugin_registry import PluginRegistry
 from app.models.task import Task
 from app.models.task_execution import TaskExecution
+from app.services.drama_share_autoupdate import is_115_auto_update_task, resolve_drama_shareurl_update
 
 
 logger = logging.getLogger(__name__)
@@ -392,6 +393,34 @@ class TaskExecutor:
                                 continue
                             log.line(f"RUN: {key}（task_after）")
                     PluginHookRunner.task_after(plugins, [task_data], default_adapter or adapter, emit_line=log.line)
+            if str(task_data.get("task_type") or "") == "drama" and is_115_auto_update_task(self.db, task, respect_toggle=True):
+                log.set_stage("shareurl_autoupdate_after")
+                log.section("自动换链")
+                try:
+                    update_result = resolve_drama_shareurl_update(self.db, task, respect_toggle=True)
+                    if bool(update_result.get("updated")):
+                        season = update_result.get("season")
+                        episode = update_result.get("episode")
+                        se = ""
+                        if season is not None and episode is not None:
+                            se = f" S{int(season):02d}E{int(episode):02d}"
+                        log.line(
+                            "OK: 自动换链成功"
+                            f"{se} old={str(update_result.get('old_shareurl') or '').strip()}"
+                            f" new={str(update_result.get('new_shareurl') or '').strip()}"
+                        )
+                    elif bool(update_result.get("checked")):
+                        log.line(f"跳过: {str(update_result.get('reason') or '未找到更高集数链接')}")
+                    else:
+                        log.line(f"跳过: {str(update_result.get('reason') or '当前任务不满足自动换链条件')}")
+                except Exception as exc:
+                    logger.warning(
+                        "任务执行后自动换链失败 task_id=%s task_uid=%s err=%s",
+                        task_id,
+                        str(getattr(task, "task_uid", "") or ""),
+                        str(exc),
+                    )
+                    log.line(f"WARN: 自动换链失败 err={str(exc).strip() or type(exc).__name__}")
             if persist_execution and task_id > 0:
                 try:
                     from app.services.task_savepath_snapshot import capture_and_upsert_snapshot

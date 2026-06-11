@@ -492,6 +492,47 @@ def _guessit_episode_numbers_cached(
     return season, episode
 
 
+@lru_cache(maxsize=4096)
+def _guessit_title_episode_numbers_cached(
+    sanitized_title: str,
+    tv_seasons_tuple: tuple | None,
+) -> tuple[int | None, int | None]:
+    """Parse season/episode from a share title without requiring a video extension."""
+    tv_seasons = (
+        [{"season_number": s, "episode_count": e} for s, e in tv_seasons_tuple]
+        if tv_seasons_tuple
+        else None
+    )
+    info = _guessit_parse(sanitized_title, media_type="tv")
+    guessed_is_episode = str(info.get("type") or "").lower() == "episode"
+    if not guessed_is_episode:
+        return None, None
+
+    season_raw = info.get("season")
+    season = int(season_raw) if isinstance(season_raw, int) and season_raw > 0 else 0
+    episode = _pick_episode(info.get("episode"))
+    if episode is None:
+        return None, None
+
+    if season <= 0:
+        mapped_season = None
+        latest = _pick_latest_season(tv_seasons)
+        if latest and episode <= latest[1]:
+            mapped_season = latest[0]
+        else:
+            mapped_season = _map_absolute_episode_to_season(episode, tv_seasons)
+        if mapped_season:
+            season = mapped_season
+        else:
+            if tv_seasons:
+                return None, None
+            season = 1
+
+    if season <= 0 or episode <= 0:
+        return None, None
+    return season, episode
+
+
 def guessit_episode_numbers(
     file_name: str,
     *,
@@ -506,6 +547,7 @@ def guessit_episode_numbers(
         return None, None
 
     sanitized = sanitize_for_guessit(base)
+    _trace(trace_tag, f"file sanitize origin={origin!r} -> sanitized={sanitized!r}")
     if not sanitized:
         return None, None
 
@@ -520,6 +562,33 @@ def guessit_episode_numbers(
         tv_seasons_tuple = None
 
     return _guessit_episode_numbers_cached(sanitized, tv_seasons_tuple)
+
+
+def guessit_title_episode_numbers(
+    title: str,
+    *,
+    tv_seasons: list[dict] | None = None,
+    trace_tag: str | None = None,
+) -> tuple[int | None, int | None]:
+    origin = str(title or "").strip()
+    if not origin:
+        return None, None
+
+    sanitized = sanitize_for_guessit(origin)
+    _trace(trace_tag, f"title sanitize origin={origin!r} -> sanitized={sanitized!r}")
+    if not sanitized:
+        return None, None
+
+    if tv_seasons:
+        tv_seasons_tuple = tuple(
+            (s.get("season_number", 0), s.get("episode_count", 0))
+            for s in tv_seasons
+            if isinstance(s, dict)
+        )
+    else:
+        tv_seasons_tuple = None
+
+    return _guessit_title_episode_numbers_cached(sanitized, tv_seasons_tuple)
 
 
 def guessit_media_target(

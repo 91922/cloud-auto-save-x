@@ -81,6 +81,7 @@ const state = reactive({
   shareurl: '',
   savepath: '',
   account_choice: '__AUTO__' as string,
+  auto_update_115_shareurl: true,
   enabled: true,
   sync_task_uids: [] as string[],
   pattern: '' as string | null,
@@ -133,6 +134,13 @@ const tmdbLink = reactive({
 const activeAccounts = computed(() => {
   return props.accounts.filter((item) => Boolean(item.enabled) && item.runtime_status === 'active')
 })
+
+const shareDriveType = computed(() => {
+  const dt = detectDriveTypeByUrl(String(state.shareurl || '').trim())
+  return dt ? String(dt) : null
+})
+
+const showAutoUpdate115Toggle = computed(() => shareDriveType.value === '115')
 
 const unavailableSelectedAccount = computed(() => {
   if (state.account_choice === '__AUTO__') return null
@@ -1006,11 +1014,16 @@ function syncState() {
     state.tmdb_media_type = props.task.tmdb_media_type ?? null
     state.addition = clone(props.task.addition || {})
     state.extra = clone(props.task.extra || {})
+    state.auto_update_115_shareurl =
+      detectDriveTypeByUrl(String(props.task.shareurl || '').trim()) === '115'
+        ? Boolean((props.task.extra as any)?.auto_update_115_shareurl ?? true)
+        : false
   } else {
     state.taskname = String(props.presetTaskname || '').trim()
     state.shareurl = ''
     state.savepath = ''
     state.account_choice = '__AUTO__'
+    state.auto_update_115_shareurl = true
     state.enabled = true
     state.sync_task_uids = []
     state.pattern = ''
@@ -1155,6 +1168,7 @@ function buildExtraPayload() {
   extra.runweek_mode = state.runweek_mode
   extra.runweek = state.runweek_mode === 'auto' ? [] : clone(state.runweek || [])
   extra.update_subdir_resave_mode = state.update_subdir_resave_mode
+  extra.auto_update_115_shareurl = showAutoUpdate115Toggle.value ? Boolean(state.auto_update_115_shareurl) : false
   if ('allow_once' in extra) delete (extra as any).allow_once
   return extra
 }
@@ -1735,6 +1749,10 @@ watch(
             />
           </el-select>
           <div class="drawer-form__hint">追剧任务执行成功后会触发这些同步任务执行。</div>
+        </el-form-item>
+        <el-form-item v-if="showAutoUpdate115Toggle" label="自动换链">
+          <el-switch v-model="state.auto_update_115_shareurl" active-text="开启" inactive-text="关闭" />
+          <div class="drawer-form__hint">仅 115 分享链接可用。任务执行成功后会尝试搜索同剧更新集数，并自动替换为下次执行使用的新链接。</div>
         </el-form-item>
       </div>
 

@@ -1,3 +1,7 @@
+export type TaskExtraConfig = Record<string, any> & {
+  auto_update_115_shareurl?: boolean | null
+}
+
 export type TaskExecutionItem = {
   id: number
   task_id: number
@@ -45,7 +49,7 @@ export type TaskItem = {
   } | null
   enabled: boolean
   addition: Record<string, any>
-  extra: Record<string, any>
+  extra: TaskExtraConfig
   created_at: string
   updated_at: string
   executions?: TaskExecutionItem[]

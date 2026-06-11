@@ -2,13 +2,32 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import os
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.extensions.runtime.guessit_fallback import guessit_episode_numbers
 from app.models.drive_account import DriveAccount
+from app.models.task import Task
 from app.models.task_savepath_snapshot import TaskSavepathSnapshot
+from app.services.tmdb_cache import get_tmdb_detail_cached
+
+
+_VIDEO_EXTS = {
+    ".mp4",
+    ".mkv",
+    ".avi",
+    ".ts",
+    ".m2ts",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".webm",
+    ".m4v",
+    ".cas",
+}
 
 
 def _normalize_savepath(savepath: str | None) -> str | None:
@@ -115,6 +134,80 @@ def fetch_savepath_files(adapter: Any, savepath: str) -> list[dict[str, Any]]:
     return result
 
 
+def _is_video_name(name: str) -> bool:
+    base, ext = os.path.splitext(str(name or ""))
+    if not base:
+        return False
+    if not ext:
+        return True
+    return ext.lower() in _VIDEO_EXTS
+
+
+def _pick_tv_seasons(details: dict[str, Any] | None) -> list[dict[str, Any]] | None:
+    if not isinstance(details, dict):
+        return None
+    raw = details.get("seasons")
+    return raw if isinstance(raw, list) else None
+
+
+def resolve_saved_latest_progress(
+    db: Session,
+    *,
+    task_uid: str,
+    files: list[dict[str, Any]],
+) -> tuple[int | None, int | None, str | None]:
+    uid = str(task_uid or "").strip()
+    if not uid or not files:
+        return None, None, None
+
+    task = db.execute(select(Task).where(Task.task_uid == uid)).scalars().first()
+    if task is None:
+        return None, None, None
+    if str(getattr(task, "task_type", "") or "") != "drama":
+        return None, None, None
+    if str(getattr(task, "tmdb_media_type", "") or "").strip().lower() != "tv":
+        return None, None, None
+    try:
+        tmdb_id = int(getattr(task, "tmdb_id", 0) or 0)
+    except Exception:
+        tmdb_id = 0
+    if tmdb_id <= 0:
+        return None, None, None
+
+    configured, detail, _update_weekdays, _episode_weekdays, _row = get_tmdb_detail_cached(
+        db,
+        media_type="tv",
+        tmdb_id=tmdb_id,
+    )
+    if not configured or not isinstance(detail, dict):
+        return None, None, None
+
+    tv_seasons = _pick_tv_seasons(detail)
+    best_key: tuple[int, int] | None = None
+    best_name: str | None = None
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("file_name") or "").strip()
+        if not name or not _is_video_name(name):
+            continue
+        season, episode = guessit_episode_numbers(name, tv_seasons=tv_seasons)
+        if season is None or episode is None:
+            continue
+        try:
+            key = (int(season), int(episode))
+        except Exception:
+            continue
+        if key[0] <= 0 or key[1] <= 0:
+            continue
+        if best_key is None or key > best_key:
+            best_key = key
+            best_name = name
+    if best_key is None:
+        return None, None, None
+    return int(best_key[0]), int(best_key[1]), best_name
+
+
 def upsert_task_savepath_snapshot(
     db: Session,
     *,
@@ -123,6 +216,9 @@ def upsert_task_savepath_snapshot(
     drive_account_id: int | None,
     savepath: str,
     files: list[dict[str, Any]],
+    saved_latest_season: int | None = None,
+    saved_latest_episode: int | None = None,
+    saved_latest_name: str | None = None,
 ) -> TaskSavepathSnapshot:
     files_json = json.dumps(files, ensure_ascii=False)
     file_count = len(files)
@@ -151,6 +247,9 @@ def upsert_task_savepath_snapshot(
             files_json=files_json,
             file_count=file_count,
             total_size=total_size,
+            saved_latest_season=saved_latest_season,
+            saved_latest_episode=saved_latest_episode,
+            saved_latest_name=saved_latest_name,
             captured_at=datetime.now(),
         )
         db.add(row)
@@ -162,6 +261,9 @@ def upsert_task_savepath_snapshot(
     row.files_json = files_json
     row.file_count = file_count
     row.total_size = total_size
+    row.saved_latest_season = saved_latest_season
+    row.saved_latest_episode = saved_latest_episode
+    row.saved_latest_name = saved_latest_name
     row.captured_at = datetime.now()
     return row
 
@@ -192,8 +294,25 @@ def capture_and_upsert_snapshot(
             emit_line(f"保存路径快照: 失败（{str(e)}）")
         return None
 
+    saved_latest_season = None
+    saved_latest_episode = None
+    saved_latest_name = None
+    try:
+        saved_latest_season, saved_latest_episode, saved_latest_name = resolve_saved_latest_progress(
+            db,
+            task_uid=str(task_uid or "").strip(),
+            files=files,
+        )
+    except Exception as e:
+        if emit_line:
+            emit_line(f"快照进度解析: 失败（{str(e)}）")
+
     if emit_line:
         emit_line(f"保存路径快照: OK（{len(files)} 个文件）")
+        if saved_latest_season is not None and saved_latest_episode is not None:
+            emit_line(f"快照进度解析: S{int(saved_latest_season):02d}E{int(saved_latest_episode):02d}")
+        else:
+            emit_line("快照进度解析: 未识别到剧集文件")
     return upsert_task_savepath_snapshot(
         db,
         task_uid=task_uid,
@@ -201,4 +320,7 @@ def capture_and_upsert_snapshot(
         drive_account_id=drive_account_id,
         savepath=normalized,
         files=files,
+        saved_latest_season=saved_latest_season,
+        saved_latest_episode=saved_latest_episode,
+        saved_latest_name=saved_latest_name,
     )
