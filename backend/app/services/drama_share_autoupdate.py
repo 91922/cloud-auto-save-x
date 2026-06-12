@@ -29,6 +29,21 @@ _RE_NOISE_TOKEN = re.compile(
     r"\b(?:4k|8k|2160p|1080p|720p|bluray|bdrip|web-?dl|webrip|hdtv|x264|x265|h\.?264|h\.?265|hevc|aac|dts|uhd)\b",
     re.IGNORECASE,
 )
+_RE_EMOJI = re.compile(
+    r"[\U0001F1E6-\U0001F1FF]"
+    r"|[\U0001F300-\U0001F5FF]"
+    r"|[\U0001F600-\U0001F64F]"
+    r"|[\U0001F680-\U0001F6FF]"
+    r"|[\U0001F700-\U0001F77F]"
+    r"|[\U0001F780-\U0001F7FF]"
+    r"|[\U0001F800-\U0001F8FF]"
+    r"|[\U0001F900-\U0001F9FF]"
+    r"|[\U0001FA00-\U0001FAFF]"
+    r"|[\U00002600-\U000026FF]"
+    r"|[\U00002700-\U000027BF]"
+    r"|[\u200D\uFE0F]",
+    re.UNICODE,
+)
 _TITLE_SEGMENT_SEPARATORS = ("|", "｜", "/", "／")
 
 
@@ -181,7 +196,15 @@ def _cleanup_title_subject(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
+    try:
+        import emoji as _emoji  # type: ignore
+
+        text = _emoji.replace_emoji(text, replace=" ")
+    except Exception:
+        text = _RE_EMOJI.sub(" ", text)
+    text = re.sub(r"^[\s\W_]+", "", text)
     text = _RE_SOURCE_PREFIX.sub("", text)
+    text = re.sub(r"^[\s\W_]+", "", text)
     text = _RE_YEAR_BRACKETS.sub(" ", text)
     text = _RE_SEASON_EPISODE.sub(" ", text)
     text = _RE_EPISODE_ONLY.sub(" ", text)
@@ -355,7 +378,7 @@ def _pick_suggestions_for_preview(
     return [item.suggestion for item in unknown_candidates[:3]]
 
 
-def _search_candidates(db: Session, *, names: list[str]) -> tuple[list[dict[str, Any]], bool]:
+def _search_candidates(db: Session, *, names: list[str]) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
     all_items: list[dict[str, Any]] = []
     db_changed = False
     for keyword in names:
@@ -364,22 +387,47 @@ def _search_candidates(db: Session, *, names: list[str]) -> tuple[list[dict[str,
             db_changed = True
         if isinstance(items, list):
             all_items.extend([x for x in items if isinstance(x, dict)])
+    stats: dict[str, Any] = {
+        "keywords": [str(x or "").strip() for x in names if str(x or "").strip()],
+        "fetched_total": len(all_items),
+        "fetched_samples": [],
+        "unique_shareurl_total": 0,
+        "skip_non115": 0,
+        "skip_tmdb_mismatch": 0,
+        "kept": 0,
+        "limit_reached": False,
+    }
     filtered: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     for item in all_items:
         shareurl = str(item.get("shareurl") or "").strip()
         if not shareurl or shareurl in seen_urls:
             continue
+        stats["unique_shareurl_total"] = int(stats.get("unique_shareurl_total") or 0) + 1
+        if len(stats["fetched_samples"]) < 50:
+            stats["fetched_samples"].append(
+                {
+                    "shareurl": shareurl,
+                    "taskname": str(item.get("taskname") or item.get("content") or "").strip(),
+                    "source": str(item.get("source") or ""),
+                    "channel": str(item.get("channel") or ""),
+                    "datetime": str(item.get("datetime") or "").strip(),
+                }
+            )
         if AdapterRegistry.detect_drive_type(shareurl) != "115":
+            stats["skip_non115"] = int(stats.get("skip_non115") or 0) + 1
             continue
         title = str(item.get("taskname") or item.get("content") or "").strip()
         if not _title_matches_tmdb_names(title, names):
+            stats["skip_tmdb_mismatch"] = int(stats.get("skip_tmdb_mismatch") or 0) + 1
             continue
         seen_urls.add(shareurl)
         filtered.append(item)
+        stats["kept"] = int(stats.get("kept") or 0) + 1
         if len(filtered) >= 25:
+            stats["limit_reached"] = True
             break
-    return filtered, db_changed
+    return filtered, db_changed, stats
 
 
 def resolve_drama_shareurl_update(db: Session, task: Any, *, respect_toggle: bool = True) -> dict[str, Any]:
@@ -399,12 +447,19 @@ def resolve_drama_shareurl_update(db: Session, task: Any, *, respect_toggle: boo
     current_season, current_episode = _resolve_current_progress(current_preview)
     tv_seasons = tmdb_context.detail.get("seasons") if isinstance(tmdb_context.detail, dict) else None
 
-    suggestions, suggestions_changed = _search_candidates(db, names=tmdb_context.names)
+    suggestions, suggestions_changed, search_stats = _search_candidates(db, names=tmdb_context.names)
     if not suggestions:
+        logger.info(
+            "[shareurl_autoupdate] no_candidates task_id=%s task_uid=%s stats=%s",
+            int(getattr(task, "id", 0) or 0),
+            str(getattr(task, "task_uid", "") or ""),
+            json.dumps(search_stats, ensure_ascii=False),
+        )
         return {
             "checked": True,
             "updated": False,
             "reason": "no_candidates",
+            "reason_detail": search_stats,
             "db_changed": bool(current_preview_changed or suggestions_changed),
         }
 
@@ -415,12 +470,30 @@ def resolve_drama_shareurl_update(db: Session, task: Any, *, respect_toggle: boo
         tv_seasons=tv_seasons if isinstance(tv_seasons, list) else None,
     )
     if not preview_suggestions:
+        logger.info(
+            "[shareurl_autoupdate] no_better_candidate_before_preview task_id=%s task_uid=%s current=S%sE%s stats=%s",
+            int(getattr(task, "id", 0) or 0),
+            str(getattr(task, "task_uid", "") or ""),
+            str(current_season or ""),
+            str(current_episode or ""),
+            json.dumps(
+                {
+                    "search": search_stats,
+                    "suggestions": len(suggestions),
+                },
+                ensure_ascii=False,
+            ),
+        )
         return {
             "checked": True,
             "updated": False,
             "reason": "no_better_candidate",
             "current_season": current_season,
             "current_episode": current_episode,
+            "reason_detail": {
+                "search": search_stats,
+                "suggestions": len(suggestions),
+            },
             "db_changed": bool(current_preview_changed or suggestions_changed),
         }
 
@@ -436,6 +509,12 @@ def resolve_drama_shareurl_update(db: Session, task: Any, *, respect_toggle: boo
     best: _ResolvedCandidate | None = None
     best_key: tuple[int, int, int, int] | None = None
     current_key = (int(current_season), int(current_episode)) if current_season is not None and current_episode is not None else None
+    preview_stats: dict[str, Any] = {
+        "preview_candidates": len(preview_suggestions),
+        "resolved_candidates": 0,
+        "skip_unpreviewable": 0,
+        "skip_not_higher": 0,
+    }
 
     for suggestion in preview_suggestions:
         shareurl = str(suggestion.get("shareurl") or "").strip()
@@ -448,9 +527,12 @@ def resolve_drama_shareurl_update(db: Session, task: Any, *, respect_toggle: boo
             tv_seasons=tv_seasons if isinstance(tv_seasons, list) else None,
         )
         if candidate is None:
+            preview_stats["skip_unpreviewable"] = int(preview_stats.get("skip_unpreviewable") or 0) + 1
             continue
+        preview_stats["resolved_candidates"] = int(preview_stats.get("resolved_candidates") or 0) + 1
         candidate_key = (candidate.season, candidate.episode)
         if current_key is not None and candidate_key <= current_key:
+            preview_stats["skip_not_higher"] = int(preview_stats.get("skip_not_higher") or 0) + 1
             continue
         sort_key = (
             int(candidate.season),
@@ -463,12 +545,21 @@ def resolve_drama_shareurl_update(db: Session, task: Any, *, respect_toggle: boo
             best_key = sort_key
 
     if best is None:
+        logger.info(
+            "[shareurl_autoupdate] no_better_candidate_after_preview task_id=%s task_uid=%s current=S%sE%s stats=%s",
+            int(getattr(task, "id", 0) or 0),
+            str(getattr(task, "task_uid", "") or ""),
+            str(current_season or ""),
+            str(current_episode or ""),
+            json.dumps({"search": search_stats, "preview": preview_stats}, ensure_ascii=False),
+        )
         return {
             "checked": True,
             "updated": False,
             "reason": "no_better_candidate",
             "current_season": current_season,
             "current_episode": current_episode,
+            "reason_detail": {"search": search_stats, "preview": preview_stats},
             "db_changed": bool(current_preview_changed or suggestions_changed or preview_changed),
         }
 

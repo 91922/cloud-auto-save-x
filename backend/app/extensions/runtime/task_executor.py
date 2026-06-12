@@ -410,7 +410,12 @@ class TaskExecutor:
                             f" new={str(update_result.get('new_shareurl') or '').strip()}"
                         )
                     elif bool(update_result.get("checked")):
-                        log.line(f"跳过: {str(update_result.get('reason') or '未找到更高集数链接')}")
+                        reason = str(update_result.get("reason") or "未找到更高集数链接")
+                        detail = update_result.get("reason_detail")
+                        if isinstance(detail, dict) and detail:
+                            log.line(f"跳过: {reason}")
+                        else:
+                            log.line(f"跳过: {reason}")
                     else:
                         log.line(f"跳过: {str(update_result.get('reason') or '当前任务不满足自动换链条件')}")
                 except Exception as exc:

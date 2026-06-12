@@ -457,7 +457,7 @@ def fetch_task_suggestions(
     keyword = str(keyword or "").strip()
     if len(keyword) < 2:
         return ([], False, None)
-    deep = 1 if str(deep) == "1" else 0
+    deep = deep or 0
     dt_filter = _normalize_drive_type(drive_type)
     _log_debug("[suggestions] request", {"keyword": keyword, "deep": deep, "drive_type": dt_filter})
 
